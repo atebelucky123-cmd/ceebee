@@ -88,11 +88,10 @@ export default function EmailsPage() {
             {emails.map((e) => (
               <div key={`${e.accountEmail}-${e.id}`} className="bg-neutral-900 rounded-xl px-4 py-3">
                 <div className="flex justify-between items-start gap-2">
-                  <span
-                    className={`text-sm truncate ${
-                      e.unread ? "font-semibold" : "text-neutral-300"
-                    }`}
-                  >
+                  <span className="text-sm truncate text-neutral-300 flex items-center gap-2">
+                    {e.unread && (
+                      <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+                    )}
                     {e.from}
                   </span>
                   <span className="text-[10px] text-neutral-600 shrink-0 capitalize">
