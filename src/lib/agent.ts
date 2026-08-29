@@ -1,8 +1,4 @@
-import {
-  GoogleGenerativeAI,
-  SchemaType,
-  type Tool,
-} from "@google/generative-ai";
+import { GoogleGenAI, Type, type FunctionDeclaration } from "@google/genai";
 import { createCalendarEvent, listUpcomingEvents } from "@/lib/calendar";
 import { listRecentEmails, sendEmail } from "@/lib/gmail";
 
@@ -11,70 +7,66 @@ import { listRecentEmails, sendEmail } from "@/lib/gmail";
 // person asks. The `parameters` schema tells Gemini what arguments to
 // extract from natural language.
 
-const tools: Tool[] = [
+const functionDeclarations: FunctionDeclaration[] = [
   {
-    functionDeclarations: [
-      {
-        name: "create_calendar_event",
-        description:
-          "Creates a new event on the user's Google Calendar, optionally with a Google Meet link and attendees.",
-        parameters: {
-          type: SchemaType.OBJECT,
-          properties: {
-            title: { type: SchemaType.STRING },
-            description: { type: SchemaType.STRING },
-            startTime: {
-              type: SchemaType.STRING,
-              description: "ISO 8601 datetime, e.g. 2026-09-02T15:00:00+01:00",
-            },
-            endTime: {
-              type: SchemaType.STRING,
-              description: "ISO 8601 datetime",
-            },
-            attendeeEmails: {
-              type: SchemaType.ARRAY,
-              items: { type: SchemaType.STRING },
-            },
-            createMeetLink: { type: SchemaType.BOOLEAN },
-          },
-          required: ["title", "startTime", "endTime"],
+    name: "create_calendar_event",
+    description:
+      "Creates a new event on the user's Google Calendar, optionally with a Google Meet link and attendees.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        title: { type: Type.STRING },
+        description: { type: Type.STRING },
+        startTime: {
+          type: Type.STRING,
+          description: "ISO 8601 datetime, e.g. 2026-09-02T15:00:00+01:00",
         },
-      },
-      {
-        name: "list_upcoming_events",
-        description:
-          "Lists the user's calendar events between now and a number of hours ahead.",
-        parameters: {
-          type: SchemaType.OBJECT,
-          properties: {
-            hoursAhead: { type: SchemaType.NUMBER },
-          },
+        endTime: {
+          type: Type.STRING,
+          description: "ISO 8601 datetime",
         },
-      },
-      {
-        name: "list_recent_emails",
-        description: "Lists the most recent emails in the user's inbox.",
-        parameters: {
-          type: SchemaType.OBJECT,
-          properties: {
-            maxResults: { type: SchemaType.NUMBER },
-          },
+        attendeeEmails: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
         },
+        createMeetLink: { type: Type.BOOLEAN },
       },
-      {
-        name: "send_email",
-        description: "Sends an email from the user's connected account.",
-        parameters: {
-          type: SchemaType.OBJECT,
-          properties: {
-            to: { type: SchemaType.STRING },
-            subject: { type: SchemaType.STRING },
-            body: { type: SchemaType.STRING },
-          },
-          required: ["to", "subject", "body"],
-        },
+      required: ["title", "startTime", "endTime"],
+    },
+  },
+  {
+    name: "list_upcoming_events",
+    description:
+      "Lists the user's calendar events between now and a number of hours ahead.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        hoursAhead: { type: Type.NUMBER },
       },
-    ],
+    },
+  },
+  {
+    name: "list_recent_emails",
+    description: "Lists the most recent emails in the user's inbox.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        maxResults: { type: Type.NUMBER },
+      },
+    },
+  },
+  {
+    name: "send_email",
+    description: "Sends an email from the user's connected account.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        to: { type: Type.STRING },
+        subject: { type: Type.STRING },
+        body: { type: Type.STRING },
+      },
+      required: ["to", "subject", "body"],
+    },
   },
 ];
 
@@ -114,50 +106,81 @@ When creating events, default to a Google Meet link only if the event sounds
 like a meeting/call. Confirm actions you've taken in plain language rather
 than repeating raw tool output.`;
 
+type HistoryMessage = { role: "user" | "model"; parts: { text: string }[] };
+
 // Runs one turn of the conversation: sends the message + history to Gemini,
 // executes any tool calls it requests, feeds results back, and returns the
 // final natural-language reply.
 export async function runAgent(
   userMessage: string,
   refreshToken: string,
-  history: { role: "user" | "model"; parts: { text: string }[] }[] = []
+  history: HistoryMessage[] = []
 ) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error("Missing GEMINI_API_KEY in your .env file.");
   }
 
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({
-    model: "gemini-3.6-flash",
-    systemInstruction: SYSTEM_PROMPT,
-    tools,
-  });
+  const ai = new GoogleGenAI({ apiKey });
 
-  const chat = model.startChat({ history });
-  let result = await chat.sendMessage(userMessage);
+  // Build up the running conversation as "contents" -- the format the
+  // current SDK expects for both text turns and function call/response turns.
+  const contents: Array<{
+    role: string;
+    parts: Array<Record<string, unknown>>;
+  }> = [
+    ...history.map((m) => ({
+      role: m.role,
+      parts: m.parts.map((p) => ({ text: p.text })),
+    })),
+    { role: "user", parts: [{ text: userMessage }] },
+  ];
+
+  const config = {
+    systemInstruction: SYSTEM_PROMPT,
+    tools: [{ functionDeclarations }],
+  };
 
   // Keep executing tool calls until Gemini returns a plain text answer.
   // Capped at 5 rounds so a bug can't loop forever.
   for (let round = 0; round < 5; round++) {
-    const call = result.response.functionCalls()?.[0];
-    if (!call) break;
+    const response = await ai.models.generateContent({
+      model: "gemini-3.6-flash",
+      contents,
+      config,
+    });
+
+    const call = response.functionCalls?.[0];
+
+    if (!call) {
+      return response.text ?? "";
+    }
+
+    // Record the model's function-call turn, then run it and feed the
+    // result back in as a function-response turn.
+    contents.push({
+      role: "model",
+      parts: [{ functionCall: { name: call.name, args: call.args } }],
+    });
 
     const toolResult = await executeTool(
-      call.name,
-      call.args as Record<string, unknown>,
+      call.name!,
+      (call.args as Record<string, unknown>) ?? {},
       refreshToken
     );
 
-    result = await chat.sendMessage([
-      {
-        functionResponse: {
-          name: call.name,
-          response: { result: toolResult },
+    contents.push({
+      role: "user",
+      parts: [
+        {
+          functionResponse: {
+            name: call.name,
+            response: { result: toolResult },
+          },
         },
-      },
-    ]);
+      ],
+    });
   }
 
-  return result.response.text();
+  return "Sorry, that took too many steps -- try rephrasing your request.";
 }
