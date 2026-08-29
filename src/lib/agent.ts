@@ -156,12 +156,14 @@ export async function runAgent(
       return response.text ?? "";
     }
 
-    // Record the model's function-call turn, then run it and feed the
-    // result back in as a function-response turn.
-    contents.push({
-      role: "model",
-      parts: [{ functionCall: { name: call.name, args: call.args } }],
-    });
+    // Push the model's own turn back verbatim -- Gemini 3.x attaches a
+    // thought_signature to function-call parts that must be echoed back
+    // exactly as received, so we use the raw candidate content rather than
+    // rebuilding the functionCall part ourselves.
+    const modelContent = response.candidates?.[0]?.content;
+    if (modelContent) {
+      contents.push(modelContent as { role: string; parts: Array<Record<string, unknown>> });
+    }
 
     const toolResult = await executeTool(
       call.name!,
