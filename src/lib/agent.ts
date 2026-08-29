@@ -100,11 +100,32 @@ async function executeTool(
   }
 }
 
-const SYSTEM_PROMPT = `You are CeeBee, a personal assistant for Shina. You have
-access to his Google Calendar and Gmail through tools. Be direct and concise.
-When creating events, default to a Google Meet link only if the event sounds
-like a meeting/call. Confirm actions you've taken in plain language rather
-than repeating raw tool output.`;
+// CeeBee has no innate sense of "now" -- without this, Gemini guesses at
+// dates from training patterns rather than reality (this is what caused
+// "tomorrow" to resolve to a random future Thursday). Rebuilt fresh on every
+// request so it's always accurate, in Shina's timezone (Africa/Lagos, WAT).
+function buildSystemPrompt() {
+  const now = new Date();
+  const formatted = new Intl.DateTimeFormat("en-GB", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Africa/Lagos",
+  }).format(now);
+
+  return `You are CeeBee, Shina's personal assistant. Refer to yourself with
+she/her pronouns. You have access to his Google Calendar and Gmail through
+tools. Be direct and concise. When creating events, default to a Google Meet
+link only if the event sounds like a meeting/call. Confirm actions you've
+taken in plain language rather than repeating raw tool output.
+
+The current date and time is: ${formatted} (West Africa Time, UTC+1). Always
+resolve relative dates ("today", "tomorrow", "next Friday", "this week")
+against this exact date -- never guess or assume a different date.`;
+}
 
 type HistoryMessage = { role: "user" | "model"; parts: { text: string }[] };
 
@@ -137,7 +158,7 @@ export async function runAgent(
   ];
 
   const config = {
-    systemInstruction: SYSTEM_PROMPT,
+    systemInstruction: buildSystemPrompt(),
     tools: [{ functionDeclarations }],
     // CeeBee's tasks (check calendar, list emails, create an event) don't
     // need deep reasoning -- MINIMAL keeps latency down without hurting
