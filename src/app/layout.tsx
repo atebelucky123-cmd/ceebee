@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import RegisterServiceWorker from "./register-sw";
 
 export const metadata: Metadata = {
   title: "CeeBee",
@@ -26,6 +27,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <link rel="apple-touch-icon" href="/icon-192.png" />
       </head>
       <body className="min-h-full flex flex-col bg-neutral-950 text-neutral-100">
+        <RegisterServiceWorker />
         {children}
       </body>
     </html>

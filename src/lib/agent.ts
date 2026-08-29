@@ -139,6 +139,10 @@ export async function runAgent(
   const config = {
     systemInstruction: SYSTEM_PROMPT,
     tools: [{ functionDeclarations }],
+    // CeeBee's tasks (check calendar, list emails, create an event) don't
+    // need deep reasoning -- a low thinking budget cuts response time
+    // noticeably without hurting accuracy on tasks this simple.
+    thinkingConfig: { thinkingBudget: 0 },
   };
 
   // Keep executing tool calls until Gemini returns a plain text answer.
