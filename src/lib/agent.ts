@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type, type FunctionDeclaration } from "@google/genai";
+import { GoogleGenAI, Type, ThinkingLevel, type FunctionDeclaration } from "@google/genai";
 import { createCalendarEvent, listUpcomingEvents } from "@/lib/calendar";
 import { listRecentEmails, sendEmail } from "@/lib/gmail";
 
@@ -140,9 +140,11 @@ export async function runAgent(
     systemInstruction: SYSTEM_PROMPT,
     tools: [{ functionDeclarations }],
     // CeeBee's tasks (check calendar, list emails, create an event) don't
-    // need deep reasoning -- a low thinking budget cuts response time
-    // noticeably without hurting accuracy on tasks this simple.
-    thinkingConfig: { thinkingBudget: 0 },
+    // need deep reasoning -- MINIMAL keeps latency down without hurting
+    // accuracy on tasks this simple. (Gemini 3.x uses thinkingLevel, not
+    // the older thinkingBudget number -- 0 is not a valid budget value and
+    // causes an INVALID_ARGUMENT error.)
+    thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
   };
 
   // Keep executing tool calls until Gemini returns a plain text answer.
