@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import WeatherWidget from "../components/WeatherWidget";
+import AddEventForm from "../components/AddEventForm";
 
 type Task = {
   id: string;
@@ -39,8 +41,22 @@ export default function DashboardPage() {
   const [events, setEvents] = useState<ScheduleEvent[]>([]);
   const [sortBy, setSortBy] = useState<"time" | "priority">("time");
   const [loading, setLoading] = useState(true);
+  const [showAddEvent, setShowAddEvent] = useState(false);
+
+  function reload() {
+    Promise.all([
+      fetch("/api/tasks").then((r) => r.json()),
+      fetch(`/api/schedule?date=${todayISO()}&sort=${sortBy}`).then((r) =>
+        r.json()
+      ),
+    ]).then(([taskData, eventData]) => {
+      setTasks(taskData.tasks ?? []);
+      setEvents(eventData.events ?? []);
+    });
+  }
 
   useEffect(() => {
+    setLoading(true);
     Promise.all([
       fetch("/api/tasks").then((r) => r.json()),
       fetch(`/api/schedule?date=${todayISO()}&sort=${sortBy}`).then((r) =>
@@ -96,6 +112,24 @@ export default function DashboardPage() {
       </header>
 
       <main className="flex-1 px-4 py-4 space-y-4">
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          {[
+            { href: "/tasks", label: "Tasks" },
+            { href: "/notes", label: "Notes" },
+            { href: "/reminders", label: "Reminders" },
+            { href: "/emails", label: "Emails" },
+            { href: "/weather", label: "Weather" },
+          ].map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              className="shrink-0 bg-neutral-900 text-neutral-300 text-xs px-3 py-1.5 rounded-full"
+            >
+              {item.label}
+            </Link>
+          ))}
+        </div>
+
         {topView === "productivity" ? (
           <ProductivitySummary
             completionPct={completionPct}
@@ -141,15 +175,31 @@ export default function DashboardPage() {
                 onToggleTask={toggleTask}
               />
             ) : (
-              <Schedule
-                events={events}
-                sortBy={sortBy}
-                onSortChange={setSortBy}
-              />
+              <>
+                <Schedule
+                  events={events}
+                  sortBy={sortBy}
+                  onSortChange={setSortBy}
+                />
+                <button
+                  onClick={() => setShowAddEvent(true)}
+                  className="w-full bg-amber-400 text-neutral-950 rounded-full py-2.5 font-medium text-sm"
+                >
+                  + Add Event
+                </button>
+              </>
             )}
           </>
         )}
       </main>
+
+      {showAddEvent && (
+        <AddEventForm
+          defaultDate={todayISO()}
+          onCreated={reload}
+          onClose={() => setShowAddEvent(false)}
+        />
+      )}
     </div>
   );
 }
