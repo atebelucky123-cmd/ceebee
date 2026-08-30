@@ -51,6 +51,34 @@ export async function createCalendarEvent(
 
 // Lists events between now and `hoursAhead` hours from now. Used for things
 // like "what's on my calendar today" or the morning briefing.
+// Lists events within an explicit date range -- used for month-grid
+// calendar views where "hours from now" doesn't apply (e.g. browsing a
+// future or past month).
+export async function listEventsInRange(
+  refreshToken: string,
+  startISO: string,
+  endISO: string
+) {
+  const auth = getAuthenticatedClient(refreshToken);
+  const calendar = google.calendar({ version: "v3", auth });
+
+  const { data } = await calendar.events.list({
+    calendarId: "primary",
+    timeMin: startISO,
+    timeMax: endISO,
+    singleEvents: true,
+    orderBy: "startTime",
+  });
+
+  return (data.items ?? []).map((event) => ({
+    id: event.id,
+    title: event.summary,
+    start: event.start?.dateTime ?? event.start?.date,
+    end: event.end?.dateTime ?? event.end?.date,
+    meetLink: event.hangoutLink ?? null,
+  }));
+}
+
 export async function listUpcomingEvents(
   refreshToken: string,
   hoursAhead: number = 24

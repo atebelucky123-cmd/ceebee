@@ -18,7 +18,6 @@ type Email = {
 
 type Account = { email: string; label: string };
 
-// Extracts the raw email address out of a "Name <email@x.com>" header.
 function extractEmailAddress(from: string) {
   const match = from.match(/<(.+)>/);
   return match ? match[1] : from;
@@ -27,8 +26,11 @@ function extractEmailAddress(from: string) {
 export default function EmailsPage() {
   const [emails, setEmails] = useState<Email[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [filter, setFilter] = useState<string | null>(null); // null = unified
+  const [filter, setFilter] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [fullBody, setFullBody] = useState<string | null>(null);
+  const [bodyLoading, setBodyLoading] = useState(false);
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
   const [replyText, setReplyText] = useState("");
   const [sending, setSending] = useState(false);
@@ -48,6 +50,26 @@ export default function EmailsPage() {
       .then((data) => setEmails(data.emails ?? []))
       .finally(() => setLoading(false));
   }, [filter]);
+
+  async function toggleExpand(email: Email) {
+    if (expandedId === email.id) {
+      setExpandedId(null);
+      setFullBody(null);
+      return;
+    }
+    setExpandedId(email.id);
+    setFullBody(null);
+    setBodyLoading(true);
+    try {
+      const res = await fetch(
+        `/api/emails/${email.id}?accountLabel=${email.accountLabel}`
+      );
+      const data = await res.json();
+      setFullBody(data.body ?? "(Couldn't load body)");
+    } finally {
+      setBodyLoading(false);
+    }
+  }
 
   function openReply(email: Email) {
     setReplyingTo(email.id);
@@ -135,21 +157,38 @@ export default function EmailsPage() {
                 key={`${e.accountEmail}-${e.id}`}
                 className="bg-neutral-900 rounded-xl px-4 py-3"
               >
-                <div className="flex justify-between items-start gap-2">
-                  <span className="text-sm truncate text-neutral-300 flex items-center gap-2">
-                    {e.unread && (
-                      <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+                <button
+                  onClick={() => toggleExpand(e)}
+                  className="w-full text-left"
+                >
+                  <div className="flex justify-between items-start gap-2">
+                    <span className="text-sm truncate text-neutral-300 flex items-center gap-2">
+                      {e.unread && (
+                        <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+                      )}
+                      {e.from}
+                    </span>
+                    <span className="text-[10px] text-neutral-600 shrink-0 capitalize">
+                      {e.accountLabel}
+                    </span>
+                  </div>
+                  <div className="text-sm mt-0.5">{e.subject}</div>
+                  <p className="text-xs text-neutral-500 mt-1 line-clamp-1">
+                    {e.snippet}
+                  </p>
+                </button>
+
+                {expandedId === e.id && (
+                  <div className="mt-3 pt-3 border-t border-neutral-800">
+                    {bodyLoading ? (
+                      <p className="text-xs text-neutral-500">Loading full email…</p>
+                    ) : (
+                      <p className="text-sm text-neutral-300 whitespace-pre-wrap">
+                        {fullBody}
+                      </p>
                     )}
-                    {e.from}
-                  </span>
-                  <span className="text-[10px] text-neutral-600 shrink-0 capitalize">
-                    {e.accountLabel}
-                  </span>
-                </div>
-                <div className="text-sm mt-0.5">{e.subject}</div>
-                <p className="text-xs text-neutral-500 mt-1 line-clamp-1">
-                  {e.snippet}
-                </p>
+                  </div>
+                )}
 
                 {sentIds.has(e.id) ? (
                   <p className="text-xs text-amber-400 mt-2">Reply sent.</p>

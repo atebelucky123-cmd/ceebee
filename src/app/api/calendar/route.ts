@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase";
-import { listUpcomingEvents } from "@/lib/calendar";
+import { listUpcomingEvents, listEventsInRange } from "@/lib/calendar";
 
 export async function GET(req: NextRequest) {
-  const hoursAhead = Number(req.nextUrl.searchParams.get("hoursAhead") ?? 24);
+  const hoursAhead = req.nextUrl.searchParams.get("hoursAhead");
+  const start = req.nextUrl.searchParams.get("start");
+  const end = req.nextUrl.searchParams.get("end");
 
   const supabase = getSupabaseServerClient();
   const { data: account, error } = await supabase
@@ -20,7 +22,10 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const events = await listUpcomingEvents(account.refresh_token, hoursAhead);
+    const events =
+      start && end
+        ? await listEventsInRange(account.refresh_token, start, end)
+        : await listUpcomingEvents(account.refresh_token, Number(hoursAhead ?? 24));
     return NextResponse.json({ events });
   } catch (err) {
     return NextResponse.json(

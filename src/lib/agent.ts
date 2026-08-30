@@ -2,14 +2,13 @@ import { GoogleGenAI, Type, ThinkingLevel, type FunctionDeclaration } from "@goo
 import { createCalendarEvent, listUpcomingEvents } from "@/lib/calendar";
 import { listRecentEmails, sendEmail } from "@/lib/gmail";
 import { fetchWeather } from "@/lib/weather";
-import { getMemoryFacts, addMemoryFact } from "@/lib/memory";
+import { getRelevantMemoryFacts, addMemoryFact } from "@/lib/memory";
+import { checkRateLimit } from "@/lib/rateLimit";
+import { logUsage } from "@/lib/usageLog";
 
 // --- Tool definitions -------------------------------------------------
-// Each tool here is a function Gemini can decide to call based on what the
-// person asks. The `parameters` schema tells Gemini what arguments to
-// extract from natural language.
 
-const functionDeclarations: FunctionDeclaration[] = [
+const ALL_TOOLS: FunctionDeclaration[] = [
   {
     name: "create_calendar_event",
     description:
@@ -23,10 +22,7 @@ const functionDeclarations: FunctionDeclaration[] = [
           type: Type.STRING,
           description: "ISO 8601 datetime, e.g. 2026-09-02T15:00:00+01:00",
         },
-        endTime: {
-          type: Type.STRING,
-          description: "ISO 8601 datetime",
-        },
+        endTime: { type: Type.STRING, description: "ISO 8601 datetime" },
         attendeeEmails: {
           type: Type.ARRAY,
           items: { type: Type.STRING },
@@ -42,9 +38,7 @@ const functionDeclarations: FunctionDeclaration[] = [
       "Lists the user's calendar events between now and a number of hours ahead.",
     parameters: {
       type: Type.OBJECT,
-      properties: {
-        hoursAhead: { type: Type.NUMBER },
-      },
+      properties: { hoursAhead: { type: Type.NUMBER } },
     },
   },
   {
@@ -52,9 +46,7 @@ const functionDeclarations: FunctionDeclaration[] = [
     description: "Lists the most recent emails in the user's inbox.",
     parameters: {
       type: Type.OBJECT,
-      properties: {
-        maxResults: { type: Type.NUMBER },
-      },
+      properties: { maxResults: { type: Type.NUMBER } },
     },
   },
   {
@@ -74,22 +66,19 @@ const functionDeclarations: FunctionDeclaration[] = [
     name: "get_weather",
     description:
       "Gets the current weather and forecast for the user's location (defaults to Lagos, Nigeria).",
-    parameters: {
-      type: Type.OBJECT,
-      properties: {},
-    },
+    parameters: { type: Type.OBJECT, properties: {} },
   },
   {
     name: "remember_fact",
     description:
-      "Saves a durable fact about Shina for future conversations -- his preferences, recurring projects, people, schedules, or anything he wants CeeBee to remember going forward. Only call this when the user shares something worth remembering long-term, not for one-off details.",
+      "Saves a durable fact about Shina for future conversations. Only call this when the user shares something worth remembering long-term.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        fact: {
+        fact: { type: Type.STRING },
+        category: {
           type: Type.STRING,
-          description:
-            "The fact to remember, written plainly, e.g. 'CBM refers to Shina's Campus Bulkmart project' or 'Shina's church service is Sundays 8-9am'.",
+          description: "e.g. 'preference', 'project', 'person', 'routine'",
         },
       },
       required: ["fact"],
@@ -97,8 +86,46 @@ const functionDeclarations: FunctionDeclaration[] = [
   },
 ];
 
+// --- Dynamic tool routing -------------------------------------------------
+// Sending all 6 tool schemas on every request costs tokens even when the
+// message is "good morning". Route to a relevant subset by keyword, and to
+// NO tools at all for plain conversation -- both cut tokens and avoid
+// pointless tool-call rounds.
+
+const ROUTES: { keywords: string[]; tools: string[] }[] = [
+  {
+    keywords: ["weather", "rain", "temperature", "forecast", "sunny", "cold", "hot"],
+    tools: ["get_weather"],
+  },
+  {
+    keywords: ["calendar", "event", "meeting", "schedule", "meet link", "invite"],
+    tools: ["create_calendar_event", "list_upcoming_events"],
+  },
+  {
+    keywords: ["email", "inbox", "gmail", "reply", "message from"],
+    tools: ["list_recent_emails", "send_email"],
+  },
+  {
+    keywords: ["remember", "don't forget", "keep in mind", "note that"],
+    tools: ["remember_fact"],
+  },
+];
+
+function selectTools(message: string): FunctionDeclaration[] | undefined {
+  const lower = message.toLowerCase();
+  const matchedNames = new Set<string>();
+
+  for (const route of ROUTES) {
+    if (route.keywords.some((k) => lower.includes(k))) {
+      route.tools.forEach((t) => matchedNames.add(t));
+    }
+  }
+
+  if (matchedNames.size === 0) return undefined; // plain chat, no tools at all
+  return ALL_TOOLS.filter((t) => t.name && matchedNames.has(t.name));
+}
+
 // --- Tool execution -----------------------------------------------------
-// Maps a Gemini function-call name to the actual code that runs it.
 
 async function executeTool(
   name: string,
@@ -109,10 +136,7 @@ async function executeTool(
     case "create_calendar_event":
       return createCalendarEvent(refreshToken, args as never);
     case "list_upcoming_events":
-      return listUpcomingEvents(
-        refreshToken,
-        (args.hoursAhead as number) ?? 24
-      );
+      return listUpcomingEvents(refreshToken, (args.hoursAhead as number) ?? 24);
     case "list_recent_emails":
       return listRecentEmails(refreshToken, (args.maxResults as number) ?? 10);
     case "send_email":
@@ -125,18 +149,70 @@ async function executeTool(
     case "get_weather":
       return fetchWeather();
     case "remember_fact":
-      await addMemoryFact(args.fact as string);
+      await addMemoryFact(
+        args.fact as string,
+        (args.category as string | undefined) ?? "general"
+      );
       return { saved: true };
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
 }
 
-// CeeBee has no innate sense of "now" -- without this, Gemini guesses at
-// dates from training patterns rather than reality (this is what caused
-// "tomorrow" to resolve to a random future Thursday). Rebuilt fresh on every
-// request so it's always accurate, in Shina's timezone (Africa/Lagos, WAT).
-async function buildSystemPrompt() {
+// --- Local response formatting -------------------------------------------
+// Skips a second Gemini call for every tool result. This is the single
+// biggest win for both cost and Gemini's free-tier RPM limit: most
+// interactions become exactly 1 Gemini request instead of 2+.
+
+function formatLocally(name: string, args: Record<string, unknown>, result: unknown): string {
+  switch (name) {
+    case "create_calendar_event": {
+      const r = result as { meetLink: string | null };
+      const meet = r.meetLink ? ` I've added a Google Meet link.` : "";
+      return `Done — I've added "${args.title}" to your calendar.${meet}`;
+    }
+    case "list_upcoming_events": {
+      const events = result as {
+        title: string;
+        start: string;
+        meetLink: string | null;
+      }[];
+      if (events.length === 0) return "You have nothing coming up.";
+      const lines = events.map((e) => {
+        const time = new Date(e.start).toLocaleString("en-GB", {
+          weekday: "short",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+        return `- ${e.title} (${time})${e.meetLink ? " — has a Meet link" : ""}`;
+      });
+      return `Here's what's coming up:\n${lines.join("\n")}`;
+    }
+    case "list_recent_emails": {
+      const emails = result as { from: string; subject: string; unread: boolean }[];
+      const unread = emails.filter((e) => e.unread).length;
+      if (emails.length === 0) return "No recent emails.";
+      const lines = emails
+        .slice(0, 5)
+        .map((e) => `- ${e.from}: ${e.subject}`);
+      return `You have ${unread} unread out of ${emails.length} recent emails:\n${lines.join("\n")}`;
+    }
+    case "send_email":
+      return `Done — I've sent the email to ${args.to}.`;
+    case "get_weather": {
+      const w = result as { currentTemp: number; condition: string; high: number; low: number };
+      return `It's currently ${w.currentTemp}°C and ${w.condition.toLowerCase()}. High ${w.high}°, low ${w.low}°.`;
+    }
+    case "remember_fact":
+      return "Got it — I'll remember that.";
+    default:
+      return "Done.";
+  }
+}
+
+// --- System prompt ---------------------------------------------------
+
+async function buildSystemPrompt(userMessage: string) {
   const now = new Date();
   const formatted = new Intl.DateTimeFormat("en-GB", {
     weekday: "long",
@@ -148,111 +224,105 @@ async function buildSystemPrompt() {
     timeZone: "Africa/Lagos",
   }).format(now);
 
-  const facts = await getMemoryFacts();
+  const facts = await getRelevantMemoryFacts(userMessage);
   const memorySection =
     facts.length > 0
-      ? `\n\nThings you know about Shina from past conversations:\n${facts
-          .map((f) => `- ${f}`)
-          .join("\n")}`
+      ? `\n\nRelevant things you know about Shina:\n${facts.map((f) => `- ${f}`).join("\n")}`
       : "";
 
-  return `You are CeeBee, Shina's personal assistant. Refer to yourself with
-she/her pronouns. You have access to his Google Calendar and Gmail through
-tools. Be direct and concise. When creating events, default to a Google Meet
-link only if the event sounds like a meeting/call. Confirm actions you've
-taken in plain language rather than repeating raw tool output. When Shina
-tells you something durable about himself worth remembering for future
-conversations (a preference, a recurring project, a person, a routine),
-call remember_fact to save it.
+  return `You are CeeBee, Shina's personal assistant (she/her). Be direct and concise -- 1-3 sentences unless asked for more. Never call a tool unless the request genuinely needs external data or an action. When creating events, add a Meet link only if it sounds like a meeting/call.
 
-The current date and time is: ${formatted} (West Africa Time, UTC+1). Always
-resolve relative dates ("today", "tomorrow", "next Friday", "this week")
-against this exact date -- never guess or assume a different date.${memorySection}`;
+Current date/time: ${formatted} (Africa/Lagos). Resolve all relative dates against this exact moment.${memorySection}`;
 }
 
 type HistoryMessage = { role: "user" | "model"; parts: { text: string }[] };
 
-// Runs one turn of the conversation: sends the message + history to Gemini,
-// executes any tool calls it requests, feeds results back, and returns the
-// final natural-language reply.
+// Runs one turn. Optimized to target ~1 Gemini request per interaction:
+// history is capped, tools are routed by keyword (or omitted entirely for
+// plain chat), and tool results are formatted locally instead of costing a
+// second model call.
 export async function runAgent(
   userMessage: string,
   refreshToken: string,
   history: HistoryMessage[] = []
 ) {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error("Missing GEMINI_API_KEY in your .env file.");
+  if (!apiKey) throw new Error("Missing GEMINI_API_KEY in your .env file.");
+
+  const allowed = await checkRateLimit();
+  if (!allowed) {
+    return "CeeBee's temporarily busy (hit her request limit) — try again in a moment.";
   }
 
   const ai = new GoogleGenAI({ apiKey });
 
-  // Build up the running conversation as "contents" -- the format the
-  // current SDK expects for both text turns and function call/response turns.
-  const contents: Array<{
-    role: string;
-    parts: Array<Record<string, unknown>>;
-  }> = [
-    ...history.map((m) => ({
+  // Cap to the last 8 messages -- old turns don't need to be resent forever.
+  const recentHistory = history.slice(-8);
+
+  const contents: Array<{ role: string; parts: Array<Record<string, unknown>> }> = [
+    ...recentHistory.map((m) => ({
       role: m.role,
       parts: m.parts.map((p) => ({ text: p.text })),
     })),
     { role: "user", parts: [{ text: userMessage }] },
   ];
 
-  const config = {
-    systemInstruction: await buildSystemPrompt(),
-    tools: [{ functionDeclarations }],
-    // CeeBee's tasks (check calendar, list emails, create an event) don't
-    // need deep reasoning -- MINIMAL keeps latency down without hurting
-    // accuracy on tasks this simple. (Gemini 3.x uses thinkingLevel, not
-    // the older thinkingBudget number -- 0 is not a valid budget value and
-    // causes an INVALID_ARGUMENT error.)
+  const tools = selectTools(userMessage);
+  const config: Record<string, unknown> = {
+    systemInstruction: await buildSystemPrompt(userMessage),
     thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
   };
+  if (tools) config.tools = [{ functionDeclarations: tools }];
 
-  // Keep executing tool calls until Gemini returns a plain text answer.
-  // Capped at 5 rounds so a bug can't loop forever.
-  for (let round = 0; round < 5; round++) {
-    const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
-      contents,
-      config,
-    });
+  const start = Date.now();
+  const response = await ai.models.generateContent({
+    model: "gemini-3.6-flash",
+    contents,
+    config,
+  });
+  const latencyMs = Date.now() - start;
 
-    const call = response.functionCalls?.[0];
+  const usage = response.usageMetadata as
+    | {
+        promptTokenCount?: number;
+        candidatesTokenCount?: number;
+        thoughtsTokenCount?: number;
+        cachedContentTokenCount?: number;
+        totalTokenCount?: number;
+      }
+    | undefined;
 
-    if (!call) {
-      return response.text ?? "";
-    }
+  const calls = response.functionCalls ?? [];
 
-    // Push the model's own turn back verbatim -- Gemini 3.x attaches a
-    // thought_signature to function-call parts that must be echoed back
-    // exactly as received, so we use the raw candidate content rather than
-    // rebuilding the functionCall part ourselves.
-    const modelContent = response.candidates?.[0]?.content;
-    if (modelContent) {
-      contents.push(modelContent as { role: string; parts: Array<Record<string, unknown>> });
-    }
+  await logUsage({
+    model: "gemini-3.6-flash",
+    promptTokens: usage?.promptTokenCount,
+    outputTokens: usage?.candidatesTokenCount,
+    thoughtTokens: usage?.thoughtsTokenCount,
+    cachedTokens: usage?.cachedContentTokenCount,
+    totalTokens: usage?.totalTokenCount,
+    toolCalls: calls.length,
+    latencyMs,
+  });
 
-    const toolResult = await executeTool(
-      call.name!,
-      (call.args as Record<string, unknown>) ?? {},
-      refreshToken
-    );
-
-    contents.push({
-      role: "user",
-      parts: [
-        {
-          functionResponse: {
-            name: call.name,
-            response: { result: toolResult },
-          },
-        },
-      ],
-    });
+  if (calls.length === 0) {
+    return response.text ?? "";
   }
 
-  return "Sorry, that took too many steps -- try rephrasing your request.";
+  // Execute every tool call Gemini requested and format each result
+  // locally -- no second model round-trip needed.
+  const summaries: string[] = [];
+  for (const call of calls) {
+    const args = (call.args as Record<string, unknown>) ?? {};
+    try {
+      const result = await executeTool(call.name!, args, refreshToken);
+      summaries.push(formatLocally(call.name!, args, result));
+    } catch (err) {
+      summaries.push(
+        `Couldn't complete that: ${err instanceof Error ? err.message : "unknown error"}`
+      );
+    }
+  }
+
+  return summaries.join("\n\n");
 }

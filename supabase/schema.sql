@@ -76,5 +76,62 @@ create table if not exists memories (
   created_at timestamptz not null default now()
 );
 alter table memories enable row level security;
+-- Safe to re-run: category/importance let CeeBee inject only relevant
+-- memories per request instead of the entire table every time.
+alter table memories add column if not exists category text default 'general';
+alter table memories add column if not exists importance smallint default 3;
+
+-- Usage logs: one row per Gemini API call, for the developer tools token
+-- usage dashboard (requests/message ratio, token counts over time).
+create table if not exists usage_logs (
+  id uuid primary key default gen_random_uuid(),
+  model text not null,
+  prompt_tokens integer,
+  output_tokens integer,
+  thought_tokens integer,
+  cached_tokens integer,
+  total_tokens integer,
+  tool_calls integer default 0,
+  latency_ms integer,
+  created_at timestamptz not null default now()
+);
+alter table usage_logs enable row level security;
+
+-- Rate limit tracking: a row per Gemini request in the last minute, used to
+-- self-enforce a safety margin below Gemini's free-tier RPM cap.
+create table if not exists rate_limit_hits (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now()
+);
+alter table rate_limit_hits enable row level security;
+create index if not exists rate_limit_hits_created_idx on rate_limit_hits (created_at);
+
+-- Web Push subscriptions, for real push notifications (reminders/tasks).
+create table if not exists push_subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  subscription jsonb not null,
+  created_at timestamptz not null default now()
+);
+alter table push_subscriptions enable row level security;
+
+-- Chat history: persisted conversations so the retractable sidebar can list
+-- and search past chats instead of losing them on refresh.
+create table if not exists conversations (
+  id uuid primary key default gen_random_uuid(),
+  title text not null default 'New chat',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+alter table conversations enable row level security;
+
+create table if not exists chat_messages (
+  id uuid primary key default gen_random_uuid(),
+  conversation_id uuid not null references conversations(id) on delete cascade,
+  role text not null,
+  content text not null,
+  created_at timestamptz not null default now()
+);
+alter table chat_messages enable row level security;
+create index if not exists chat_messages_conversation_idx on chat_messages (conversation_id);
 
 

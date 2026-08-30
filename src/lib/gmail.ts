@@ -48,6 +48,38 @@ export async function listRecentEmails(
 }
 
 // Sends a plain-text email from the connected account.
+// Fetches and decodes the full plain-text body of a single message.
+export async function getFullEmailBody(refreshToken: string, messageId: string) {
+  const auth = getAuthenticatedClient(refreshToken);
+  const gmail = google.gmail({ version: "v1", auth });
+
+  const { data } = await gmail.users.messages.get({
+    userId: "me",
+    id: messageId,
+    format: "full",
+  });
+
+  function extractText(part: {
+    mimeType?: string | null;
+    body?: { data?: string | null } | null;
+    parts?: unknown[];
+  }): string {
+    if (part.mimeType === "text/plain" && part.body?.data) {
+      return Buffer.from(part.body.data, "base64").toString("utf-8");
+    }
+    if (part.parts) {
+      for (const sub of part.parts as typeof part.parts) {
+        const text = extractText(sub as typeof part);
+        if (text) return text;
+      }
+    }
+    return "";
+  }
+
+  const body = data.payload ? extractText(data.payload) : "";
+  return { body: body || data.snippet || "(No content)" };
+}
+
 export async function sendEmail(
   refreshToken: string,
   to: string,

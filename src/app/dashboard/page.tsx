@@ -44,11 +44,12 @@ export default function DashboardPage() {
   const [sortBy, setSortBy] = useState<"time" | "priority">("time");
   const [loading, setLoading] = useState(true);
   const [showAddEvent, setShowAddEvent] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(todayISO());
 
   function reload() {
     Promise.all([
       fetch("/api/tasks").then((r) => r.json()),
-      fetch(`/api/schedule?date=${todayISO()}&sort=${sortBy}`).then((r) =>
+      fetch(`/api/schedule?date=${selectedDate}&sort=${sortBy}`).then((r) =>
         r.json()
       ),
     ]).then(([taskData, eventData]) => {
@@ -61,7 +62,7 @@ export default function DashboardPage() {
     setLoading(true);
     Promise.all([
       fetch("/api/tasks").then((r) => r.json()),
-      fetch(`/api/schedule?date=${todayISO()}&sort=${sortBy}`).then((r) =>
+      fetch(`/api/schedule?date=${selectedDate}&sort=${sortBy}`).then((r) =>
         r.json()
       ),
     ])
@@ -70,7 +71,7 @@ export default function DashboardPage() {
         setEvents(eventData.events ?? []);
       })
       .finally(() => setLoading(false));
-  }, [sortBy]);
+  }, [sortBy, selectedDate]);
 
   async function toggleTask(id: string, done: boolean) {
     setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, done } : t)));
@@ -184,6 +185,8 @@ export default function DashboardPage() {
                   sortBy={sortBy}
                   onSortChange={setSortBy}
                   onReload={reload}
+                  selectedDate={selectedDate}
+                  onDateChange={setSelectedDate}
                 />
                 <button
                   onClick={() => setShowAddEvent(true)}
@@ -199,7 +202,7 @@ export default function DashboardPage() {
 
       {showAddEvent && (
         <AddEventForm
-          defaultDate={todayISO()}
+          defaultDate={selectedDate}
           onCreated={reload}
           onClose={() => setShowAddEvent(false)}
         />
@@ -217,21 +220,68 @@ function ProductivitySummary({
   done: number;
   total: number;
 }) {
+  const [weekData, setWeekData] = useState<
+    { date: string; total: number; done: number; pct: number }[]
+  >([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch("/api/stats/productivity")
+      .then((r) => r.json())
+      .then((data) => setWeekData(data.days ?? []))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const weekAvg =
+    weekData.length > 0
+      ? Math.round(weekData.reduce((s, d) => s + d.pct, 0) / weekData.length)
+      : 0;
+
   return (
-    <div className="bg-neutral-900 rounded-2xl p-6 text-center space-y-2">
-      <div className="text-4xl font-bold text-amber-400">{completionPct}%</div>
-      <div className="text-sm text-neutral-400">
-        {done} of {total} tasks completed today
+    <div className="space-y-4">
+      <div className="bg-neutral-900 rounded-2xl p-6 text-center space-y-2">
+        <div className="text-4xl font-bold text-amber-400">{completionPct}%</div>
+        <div className="text-sm text-neutral-400">
+          {done} of {total} tasks completed today
+        </div>
+        <div className="w-full bg-neutral-800 rounded-full h-2 mt-3">
+          <div
+            className="bg-amber-400 h-2 rounded-full transition-all"
+            style={{ width: `${completionPct}%` }}
+          />
+        </div>
       </div>
-      <div className="w-full bg-neutral-800 rounded-full h-2 mt-3">
-        <div
-          className="bg-amber-400 h-2 rounded-full transition-all"
-          style={{ width: `${completionPct}%` }}
-        />
+
+      <div className="bg-neutral-900 rounded-2xl p-4">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-xs uppercase text-neutral-500 font-medium">
+            Last 7 Days
+          </h3>
+          <span className="text-xs text-neutral-500">Avg {weekAvg}%</span>
+        </div>
+        {loading ? (
+          <p className="text-neutral-500 text-sm text-center py-4">Loading…</p>
+        ) : (
+          <div className="flex items-end justify-between gap-2 h-32">
+            {weekData.map((d) => {
+              const label = new Date(d.date).toLocaleDateString("en-GB", {
+                weekday: "narrow",
+              });
+              return (
+                <div key={d.date} className="flex-1 flex flex-col items-center gap-1">
+                  <div className="w-full flex-1 flex items-end">
+                    <div
+                      className="w-full bg-amber-400 rounded-t-md transition-all"
+                      style={{ height: `${Math.max(d.pct, 4)}%` }}
+                    />
+                  </div>
+                  <span className="text-[10px] text-neutral-500">{label}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
-      <p className="text-xs text-neutral-500 pt-2">
-        Weekly trends coming soon.
-      </p>
     </div>
   );
 }
@@ -310,11 +360,15 @@ function Schedule({
   sortBy,
   onSortChange,
   onReload,
+  selectedDate,
+  onDateChange,
 }: {
   events: ScheduleEvent[];
   sortBy: "time" | "priority";
   onSortChange: (sort: "time" | "priority") => void;
   onReload: () => void;
+  selectedDate: string;
+  onDateChange: (date: string) => void;
 }) {
   const [bulkLoading, setBulkLoading] = useState(false);
 
@@ -332,17 +386,23 @@ function Schedule({
     await fetch("/api/schedule/bulk", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ date: todayISO(), action }),
+      body: JSON.stringify({ date: selectedDate, action }),
     });
     onReload();
     setBulkLoading(false);
   }
 
   const allDone = events.length > 0 && events.every((e) => e.done);
-  const anyDone = events.some((e) => e.done);
 
   return (
     <div className="space-y-3">
+      <input
+        type="date"
+        value={selectedDate}
+        onChange={(e) => onDateChange(e.target.value)}
+        className="w-full bg-neutral-900 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+      />
+
       <div className="flex justify-between items-center text-xs">
         {events.length > 0 && (
           <button
@@ -373,7 +433,7 @@ function Schedule({
 
       {events.length === 0 ? (
         <div className="text-neutral-500 text-sm text-center py-8">
-          No events scheduled for today.
+          No events scheduled for this day.
         </div>
       ) : (
         events.map((e) => (
