@@ -23,6 +23,7 @@ export default function AddEventForm({
   const [description, setDescription] = useState("");
   const [eventDate, setEventDate] = useState(defaultDate);
   const [startTime, setStartTime] = useState("");
+  const [endTime, setEndTime] = useState("");
   const [meetingLink, setMeetingLink] = useState("");
   const [priority, setPriority] = useState(3);
   const [remindBefore, setRemindBefore] = useState("");
@@ -47,6 +48,7 @@ export default function AddEventForm({
           description: description || null,
           event_date: eventDate,
           start_time: startTime || null,
+          end_time: endTime || null,
           meeting_link: meetingLink || null,
           priority,
           remind_before_minutes: remindBefore ? Number(remindBefore) : null,
@@ -110,14 +112,29 @@ export default function AddEventForm({
                 className="w-full bg-neutral-800 rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-amber-400"
               />
             </div>
+            <div />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-xs text-neutral-500 block mb-1">
-                Time (optional)
+                From (optional)
               </label>
               <input
                 type="time"
                 value={startTime}
                 onChange={(e) => setStartTime(e.target.value)}
+                className="w-full bg-neutral-800 rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-neutral-500 block mb-1">
+                To (optional)
+              </label>
+              <input
+                type="time"
+                value={endTime}
+                onChange={(e) => setEndTime(e.target.value)}
                 className="w-full bg-neutral-800 rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-amber-400"
               />
             </div>

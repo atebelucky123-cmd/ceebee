@@ -7,12 +7,17 @@ type Task = {
   id: string;
   title: string;
   due_date: string | null;
+  start_time: string | null;
+  end_time: string | null;
   done: boolean;
 };
 
 export default function TasksPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [newTitle, setNewTitle] = useState("");
+  const [showTimeFields, setShowTimeFields] = useState(false);
+  const [startTime, setStartTime] = useState("");
+  const [endTime, setEndTime] = useState("");
   const [loading, setLoading] = useState(true);
 
   function load() {
@@ -32,8 +37,15 @@ export default function TasksPage() {
     await fetch("/api/tasks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title }),
+      body: JSON.stringify({
+        title,
+        start_time: startTime || null,
+        end_time: endTime || null,
+      }),
     });
+    setStartTime("");
+    setEndTime("");
+    setShowTimeFields(false);
     load();
   }
 
@@ -64,19 +76,56 @@ export default function TasksPage() {
       </header>
 
       <main className="flex-1 px-4 py-4 space-y-4">
-        <form onSubmit={addTask} className="flex gap-2">
-          <input
-            value={newTitle}
-            onChange={(e) => setNewTitle(e.target.value)}
-            placeholder="Add a task…"
-            className="flex-1 bg-neutral-900 rounded-full px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-amber-400"
-          />
-          <button
-            type="submit"
-            className="bg-amber-400 text-neutral-950 rounded-full px-5 py-2.5 text-sm font-medium"
-          >
-            Add
-          </button>
+        <form onSubmit={addTask} className="space-y-2">
+          <div className="flex gap-2">
+            <input
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
+              placeholder="Add a task…"
+              className="flex-1 bg-neutral-900 rounded-full px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+            />
+            <button
+              type="submit"
+              className="bg-amber-400 text-neutral-950 rounded-full px-5 py-2.5 text-sm font-medium"
+            >
+              Add
+            </button>
+          </div>
+
+          {!showTimeFields ? (
+            <button
+              type="button"
+              onClick={() => setShowTimeFields(true)}
+              className="text-amber-400 text-xs font-medium"
+            >
+              + Add time (optional)
+            </button>
+          ) : (
+            <div className="grid grid-cols-2 gap-2 bg-neutral-900 rounded-xl p-3">
+              <div>
+                <label className="text-xs text-neutral-500 block mb-1">
+                  From
+                </label>
+                <input
+                  type="time"
+                  value={startTime}
+                  onChange={(e) => setStartTime(e.target.value)}
+                  className="w-full bg-neutral-800 rounded-lg px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-neutral-500 block mb-1">
+                  To
+                </label>
+                <input
+                  type="time"
+                  value={endTime}
+                  onChange={(e) => setEndTime(e.target.value)}
+                  className="w-full bg-neutral-800 rounded-lg px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+                />
+              </div>
+            </div>
+          )}
         </form>
 
         {loading ? (
@@ -100,13 +149,21 @@ export default function TasksPage() {
                   onChange={(e) => toggleTask(t.id, e.target.checked)}
                   className="w-4 h-4 accent-amber-400"
                 />
-                <span
-                  className={`text-sm flex-1 ${
-                    t.done ? "line-through text-neutral-500" : ""
-                  }`}
-                >
-                  {t.title}
-                </span>
+                <div className="flex-1">
+                  <span
+                    className={`text-sm ${
+                      t.done ? "line-through text-neutral-500" : ""
+                    }`}
+                  >
+                    {t.title}
+                  </span>
+                  {(t.start_time || t.end_time) && (
+                    <div className="text-xs text-neutral-500">
+                      {t.start_time?.slice(0, 5)}
+                      {t.end_time && ` - ${t.end_time.slice(0, 5)}`}
+                    </div>
+                  )}
+                </div>
                 <button
                   onClick={() => deleteTask(t.id)}
                   className="text-neutral-600 text-xs"

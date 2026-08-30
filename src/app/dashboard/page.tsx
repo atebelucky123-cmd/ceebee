@@ -18,9 +18,11 @@ type ScheduleEvent = {
   description: string | null;
   event_date: string;
   start_time: string | null;
+  end_time: string | null;
   meeting_link: string | null;
   priority: number;
   remind_before_minutes: number | null;
+  done: boolean;
 };
 
 type TopView = "today" | "productivity";
@@ -181,6 +183,7 @@ export default function DashboardPage() {
                   events={events}
                   sortBy={sortBy}
                   onSortChange={setSortBy}
+                  onReload={reload}
                 />
                 <button
                   onClick={() => setShowAddEvent(true)}
@@ -306,28 +309,66 @@ function Schedule({
   events,
   sortBy,
   onSortChange,
+  onReload,
 }: {
   events: ScheduleEvent[];
   sortBy: "time" | "priority";
   onSortChange: (sort: "time" | "priority") => void;
+  onReload: () => void;
 }) {
+  const [bulkLoading, setBulkLoading] = useState(false);
+
+  async function toggleDone(id: string, done: boolean) {
+    await fetch(`/api/schedule/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ done }),
+    });
+    onReload();
+  }
+
+  async function bulkAction(action: "clear" | "unclear") {
+    setBulkLoading(true);
+    await fetch("/api/schedule/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ date: todayISO(), action }),
+    });
+    onReload();
+    setBulkLoading(false);
+  }
+
+  const allDone = events.length > 0 && events.every((e) => e.done);
+  const anyDone = events.some((e) => e.done);
+
   return (
     <div className="space-y-3">
-      <div className="flex justify-end gap-2 text-xs">
-        <span className="text-neutral-500 self-center">Sort by:</span>
-        {(["time", "priority"] as const).map((opt) => (
+      <div className="flex justify-between items-center text-xs">
+        {events.length > 0 && (
           <button
-            key={opt}
-            onClick={() => onSortChange(opt)}
-            className={`px-3 py-1 rounded-full capitalize ${
-              sortBy === opt
-                ? "bg-amber-400 text-neutral-950"
-                : "bg-neutral-900 text-neutral-400"
-            }`}
+            onClick={() => bulkAction(allDone ? "unclear" : "clear")}
+            disabled={bulkLoading}
+            className="bg-amber-400 text-neutral-950 font-medium px-3 py-1.5 rounded-full disabled:opacity-50"
           >
-            {opt}
+            {allDone ? "Unclear Schedule" : "Clear Schedule"}
           </button>
-        ))}
+        )}
+        <div className="flex gap-2 ml-auto">
+          <span className="text-neutral-500 self-center">Sort by:</span>
+          {(["time", "priority"] as const).map((opt) => (
+            <button
+              key={opt}
+              onClick={() => onSortChange(opt)}
+              className={`px-3 py-1 rounded-full capitalize ${
+                sortBy === opt
+                  ? "bg-amber-400 text-neutral-950"
+                  : "bg-neutral-900 text-neutral-400"
+              }`}
+            >
+              {opt}
+            </button>
+          ))}
+        </div>
       </div>
 
       {events.length === 0 ? (
@@ -336,18 +377,44 @@ function Schedule({
         </div>
       ) : (
         events.map((e) => (
-          <div key={e.id} className="bg-neutral-900 rounded-xl px-4 py-3">
-            <div className="flex justify-between items-start">
-              <span className="font-medium text-sm">{e.title}</span>
-              <span className="text-xs text-amber-400 font-medium">
+          <div
+            key={e.id}
+            className={`bg-neutral-900 rounded-xl px-4 py-3 transition-opacity ${
+              e.done ? "opacity-40" : ""
+            }`}
+          >
+            <div className="flex justify-between items-start gap-2">
+              <label className="flex items-start gap-2 flex-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={e.done}
+                  onChange={(ev) => toggleDone(e.id, ev.target.checked)}
+                  className="w-4 h-4 accent-amber-400 mt-0.5 shrink-0"
+                />
+                <span
+                  className={`font-medium text-sm ${
+                    e.done ? "line-through" : ""
+                  }`}
+                >
+                  {e.title}
+                </span>
+              </label>
+              <span className="text-xs text-amber-400 font-medium shrink-0">
                 P{e.priority}
               </span>
             </div>
             {e.description && (
-              <p className="text-xs text-neutral-400 mt-1">{e.description}</p>
+              <p className="text-xs text-neutral-400 mt-1 ml-6">
+                {e.description}
+              </p>
             )}
-            <div className="flex gap-3 mt-2 text-xs text-neutral-500">
-              {e.start_time && <span>{e.start_time.slice(0, 5)}</span>}
+            <div className="flex gap-3 mt-2 text-xs text-neutral-500 ml-6">
+              {e.start_time && (
+                <span>
+                  {e.start_time.slice(0, 5)}
+                  {e.end_time && ` - ${e.end_time.slice(0, 5)}`}
+                </span>
+              )}
               {e.meeting_link && (
                 <a
                   href={e.meeting_link}
