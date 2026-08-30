@@ -46,8 +46,11 @@ export default function NotesPage() {
   return (
     <div className="flex flex-col flex-1 min-h-0 w-full overflow-y-auto">
       <header className="px-4 py-3 border-b border-neutral-800 flex items-center gap-3">
-        <Link href="/dashboard" className="text-neutral-500 text-sm">
-          ← Back
+        <Link
+          href="/dashboard"
+          className="bg-amber-400 text-neutral-950 text-xs font-medium px-3 py-1.5 rounded-full"
+        >
+          Back
         </Link>
         <h1 className="font-semibold text-lg">Notes</h1>
       </header>

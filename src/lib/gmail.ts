@@ -2,7 +2,8 @@ import { google } from "googleapis";
 import { getAuthenticatedClient } from "@/lib/google";
 
 // Lists the most recent messages in the inbox, decoded to plain summaries
-// (sender, subject, snippet) rather than raw Gmail payload.
+// (sender, subject, snippet) rather than raw Gmail payload. Includes
+// threadId and the Message-ID header so replies can be threaded correctly.
 export async function listRecentEmails(
   refreshToken: string,
   maxResults: number = 10
@@ -22,15 +23,18 @@ export async function listRecentEmails(
         userId: "me",
         id: msg.id!,
         format: "metadata",
-        metadataHeaders: ["Subject", "From", "Date"],
+        metadataHeaders: ["Subject", "From", "Date", "Message-ID"],
       });
 
       const headers = full.payload?.headers ?? [];
       const get = (name: string) =>
-        headers.find((h) => h.name === name)?.value ?? "";
+        headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())
+          ?.value ?? "";
 
       return {
         id: msg.id,
+        threadId: full.threadId,
+        messageIdHeader: get("Message-ID"),
         from: get("From"),
         subject: get("Subject"),
         date: get("Date"),
@@ -70,6 +74,59 @@ export async function sendEmail(
   const { data } = await gmail.users.messages.send({
     userId: "me",
     requestBody: { raw: encoded },
+  });
+
+  return { messageId: data.id };
+}
+
+// Sends a reply within an existing thread. Requires the original message's
+// threadId, its Message-ID header (for In-Reply-To/References so mail
+// clients thread it visually), the sender to reply to, and the subject
+// (auto-prefixed with "Re:" if not already).
+export async function sendReply(
+  refreshToken: string,
+  {
+    threadId,
+    inReplyToMessageId,
+    to,
+    subject,
+    body,
+  }: {
+    threadId: string;
+    inReplyToMessageId: string;
+    to: string;
+    subject: string;
+    body: string;
+  }
+) {
+  const auth = getAuthenticatedClient(refreshToken);
+  const gmail = google.gmail({ version: "v1", auth });
+
+  const replySubject = subject.toLowerCase().startsWith("re:")
+    ? subject
+    : `Re: ${subject}`;
+
+  const message = [
+    `To: ${to}`,
+    `Subject: ${replySubject}`,
+    inReplyToMessageId ? `In-Reply-To: ${inReplyToMessageId}` : "",
+    inReplyToMessageId ? `References: ${inReplyToMessageId}` : "",
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    body,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const encoded = Buffer.from(message)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+
+  const { data } = await gmail.users.messages.send({
+    userId: "me",
+    requestBody: { raw: encoded, threadId },
   });
 
   return { messageId: data.id };

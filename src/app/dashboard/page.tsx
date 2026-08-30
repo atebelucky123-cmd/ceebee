@@ -118,6 +118,7 @@ export default function DashboardPage() {
             { href: "/notes", label: "Notes" },
             { href: "/reminders", label: "Reminders" },
             { href: "/emails", label: "Emails" },
+            { href: "/calendar", label: "Calendar" },
             { href: "/weather", label: "Weather" },
           ].map((item) => (
             <Link

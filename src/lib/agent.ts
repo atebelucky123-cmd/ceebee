@@ -1,6 +1,8 @@
 import { GoogleGenAI, Type, ThinkingLevel, type FunctionDeclaration } from "@google/genai";
 import { createCalendarEvent, listUpcomingEvents } from "@/lib/calendar";
 import { listRecentEmails, sendEmail } from "@/lib/gmail";
+import { fetchWeather } from "@/lib/weather";
+import { getMemoryFacts, addMemoryFact } from "@/lib/memory";
 
 // --- Tool definitions -------------------------------------------------
 // Each tool here is a function Gemini can decide to call based on what the
@@ -68,6 +70,31 @@ const functionDeclarations: FunctionDeclaration[] = [
       required: ["to", "subject", "body"],
     },
   },
+  {
+    name: "get_weather",
+    description:
+      "Gets the current weather and forecast for the user's location (defaults to Lagos, Nigeria).",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+  {
+    name: "remember_fact",
+    description:
+      "Saves a durable fact about Shina for future conversations -- his preferences, recurring projects, people, schedules, or anything he wants CeeBee to remember going forward. Only call this when the user shares something worth remembering long-term, not for one-off details.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        fact: {
+          type: Type.STRING,
+          description:
+            "The fact to remember, written plainly, e.g. 'CBM refers to Shina's Campus Bulkmart project' or 'Shina's church service is Sundays 8-9am'.",
+        },
+      },
+      required: ["fact"],
+    },
+  },
 ];
 
 // --- Tool execution -----------------------------------------------------
@@ -95,6 +122,11 @@ async function executeTool(
         args.subject as string,
         args.body as string
       );
+    case "get_weather":
+      return fetchWeather();
+    case "remember_fact":
+      await addMemoryFact(args.fact as string);
+      return { saved: true };
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -104,7 +136,7 @@ async function executeTool(
 // dates from training patterns rather than reality (this is what caused
 // "tomorrow" to resolve to a random future Thursday). Rebuilt fresh on every
 // request so it's always accurate, in Shina's timezone (Africa/Lagos, WAT).
-function buildSystemPrompt() {
+async function buildSystemPrompt() {
   const now = new Date();
   const formatted = new Intl.DateTimeFormat("en-GB", {
     weekday: "long",
@@ -116,15 +148,26 @@ function buildSystemPrompt() {
     timeZone: "Africa/Lagos",
   }).format(now);
 
+  const facts = await getMemoryFacts();
+  const memorySection =
+    facts.length > 0
+      ? `\n\nThings you know about Shina from past conversations:\n${facts
+          .map((f) => `- ${f}`)
+          .join("\n")}`
+      : "";
+
   return `You are CeeBee, Shina's personal assistant. Refer to yourself with
 she/her pronouns. You have access to his Google Calendar and Gmail through
 tools. Be direct and concise. When creating events, default to a Google Meet
 link only if the event sounds like a meeting/call. Confirm actions you've
-taken in plain language rather than repeating raw tool output.
+taken in plain language rather than repeating raw tool output. When Shina
+tells you something durable about himself worth remembering for future
+conversations (a preference, a recurring project, a person, a routine),
+call remember_fact to save it.
 
 The current date and time is: ${formatted} (West Africa Time, UTC+1). Always
 resolve relative dates ("today", "tomorrow", "next Friday", "this week")
-against this exact date -- never guess or assume a different date.`;
+against this exact date -- never guess or assume a different date.${memorySection}`;
 }
 
 type HistoryMessage = { role: "user" | "model"; parts: { text: string }[] };
@@ -158,7 +201,7 @@ export async function runAgent(
   ];
 
   const config = {
-    systemInstruction: buildSystemPrompt(),
+    systemInstruction: await buildSystemPrompt(),
     tools: [{ functionDeclarations }],
     // CeeBee's tasks (check calendar, list emails, create an event) don't
     // need deep reasoning -- MINIMAL keeps latency down without hurting

@@ -54,3 +54,14 @@ create table if not exists schedule_events (
 alter table schedule_events enable row level security;
 create index if not exists schedule_events_date_idx on schedule_events (event_date);
 
+-- Memories: durable facts CeeBee learns about Shina over time, injected
+-- into her instructions on every chat request. This is the "training"
+-- layer -- not model fine-tuning, just a growing personal context file.
+create table if not exists memories (
+  id uuid primary key default gen_random_uuid(),
+  fact text not null,
+  created_at timestamptz not null default now()
+);
+alter table memories enable row level security;
+
+

@@ -38,7 +38,7 @@ function dayLabel(dateStr: string, index: number) {
 
 function hourLabel(dateStr: string) {
   const d = new Date(dateStr);
-  return d.toLocaleTimeString("en-GB", { hour: "numeric" });
+  return d.toLocaleTimeString("en-US", { hour: "numeric", hour12: true });
 }
 
 export default function WeatherPage() {
@@ -74,8 +74,11 @@ export default function WeatherPage() {
   return (
     <div className="flex flex-col flex-1 min-h-0 w-full overflow-y-auto">
       <header className="px-4 py-3 border-b border-neutral-800 flex items-center gap-3">
-        <Link href="/dashboard" className="text-neutral-500 text-sm">
-          ← Back
+        <Link
+          href="/dashboard"
+          className="bg-amber-400 text-neutral-950 text-xs font-medium px-3 py-1.5 rounded-full"
+        >
+          Back
         </Link>
         <h1 className="font-semibold text-lg">Weather</h1>
       </header>
@@ -129,13 +132,16 @@ export default function WeatherPage() {
                 {weather.hourly.map((h, i) => (
                   <div
                     key={h.time}
-                    className="flex flex-col items-center gap-1 bg-neutral-900 rounded-xl px-3 py-3 shrink-0 min-w-[64px]"
+                    className="flex flex-col items-center gap-1 bg-neutral-900 rounded-xl px-3 py-3 shrink-0 min-w-[76px]"
                   >
                     <span className="text-xs text-neutral-500">
                       {i === 0 ? "Now" : hourLabel(h.time)}
                     </span>
                     <span className="text-sm font-semibold">{h.temp}°</span>
-                    <span className="text-[10px] text-neutral-500">
+                    <span className="text-[10px] text-neutral-400 text-center leading-tight">
+                      {h.condition}
+                    </span>
+                    <span className="text-[10px] text-amber-400">
                       {h.precipChance}%
                     </span>
                   </div>

@@ -3,26 +3,37 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 
-type ScheduleEvent = {
+type CalEvent = {
   id: string;
   title: string;
-  event_date: string;
-  start_time: string | null;
-  remind_before_minutes: number | null;
+  start: string;
+  end: string;
+  meetLink: string | null;
+  attendees: string[];
 };
 
-export default function RemindersPage() {
-  const [events, setEvents] = useState<ScheduleEvent[]>([]);
+function formatDate(iso: string) {
+  const d = new Date(iso);
+  return d.toLocaleString("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export default function CalendarPage() {
+  const [events, setEvents] = useState<CalEvent[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    fetch("/api/schedule?sort=time")
+    fetch("/api/calendar?hoursAhead=336") // next 14 days
       .then((r) => r.json())
       .then((data) => {
-        const withReminders = (data.events ?? []).filter(
-          (e: ScheduleEvent) => e.remind_before_minutes
-        );
-        setEvents(withReminders);
+        if (data.error) setError(data.error);
+        else setEvents(data.events ?? []);
       })
       .finally(() => setLoading(false));
   }, []);
@@ -36,7 +47,7 @@ export default function RemindersPage() {
         >
           Back
         </Link>
-        <h1 className="font-semibold text-lg">Reminders</h1>
+        <h1 className="font-semibold text-lg">Calendar</h1>
       </header>
 
       <main className="flex-1 px-4 py-4 space-y-2">
@@ -44,20 +55,31 @@ export default function RemindersPage() {
           <div className="text-neutral-500 text-sm text-center py-8">
             Loading…
           </div>
+        ) : error ? (
+          <div className="text-neutral-500 text-sm text-center py-8">
+            {error}
+          </div>
         ) : events.length === 0 ? (
           <div className="text-neutral-500 text-sm text-center py-8">
-            No reminders set. Add one when creating an event on your
-            Schedule.
+            No events in the next two weeks.
           </div>
         ) : (
           events.map((e) => (
             <div key={e.id} className="bg-neutral-900 rounded-xl px-4 py-3">
               <div className="text-sm font-medium">{e.title}</div>
               <div className="text-xs text-neutral-500 mt-1">
-                {e.event_date}
-                {e.start_time ? ` at ${e.start_time.slice(0, 5)}` : ""} —
-                reminder {e.remind_before_minutes} min before
+                {formatDate(e.start)}
               </div>
+              {e.meetLink && (
+                <a
+                  href={e.meetLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-amber-400 text-xs underline mt-1 inline-block"
+                >
+                  Join meeting
+                </a>
+              )}
             </div>
           ))
         )}

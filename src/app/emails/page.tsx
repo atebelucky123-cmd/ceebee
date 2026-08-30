@@ -5,6 +5,8 @@ import Link from "next/link";
 
 type Email = {
   id: string;
+  threadId: string;
+  messageIdHeader: string;
   from: string;
   subject: string;
   date: string;
@@ -16,11 +18,21 @@ type Email = {
 
 type Account = { email: string; label: string };
 
+// Extracts the raw email address out of a "Name <email@x.com>" header.
+function extractEmailAddress(from: string) {
+  const match = from.match(/<(.+)>/);
+  return match ? match[1] : from;
+}
+
 export default function EmailsPage() {
   const [emails, setEmails] = useState<Email[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [filter, setFilter] = useState<string | null>(null); // null = unified
   const [loading, setLoading] = useState(true);
+  const [replyingTo, setReplyingTo] = useState<string | null>(null);
+  const [replyText, setReplyText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sentIds, setSentIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     fetch("/api/accounts")
@@ -37,11 +49,44 @@ export default function EmailsPage() {
       .finally(() => setLoading(false));
   }, [filter]);
 
+  function openReply(email: Email) {
+    setReplyingTo(email.id);
+    setReplyText("");
+  }
+
+  async function sendReply(email: Email) {
+    if (!replyText.trim()) return;
+    setSending(true);
+    try {
+      const res = await fetch("/api/emails/reply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accountLabel: email.accountLabel,
+          threadId: email.threadId,
+          inReplyToMessageId: email.messageIdHeader,
+          to: extractEmailAddress(email.from),
+          subject: email.subject,
+          body: replyText,
+        }),
+      });
+      if (res.ok) {
+        setSentIds((prev) => new Set(prev).add(email.id));
+        setReplyingTo(null);
+      }
+    } finally {
+      setSending(false);
+    }
+  }
+
   return (
     <div className="flex flex-col flex-1 min-h-0 w-full overflow-y-auto">
       <header className="px-4 py-3 border-b border-neutral-800 flex items-center gap-3">
-        <Link href="/dashboard" className="text-neutral-500 text-sm">
-          ← Back
+        <Link
+          href="/dashboard"
+          className="bg-amber-400 text-neutral-950 text-xs font-medium px-3 py-1.5 rounded-full"
+        >
+          Back
         </Link>
         <h1 className="font-semibold text-lg">Emails</h1>
       </header>
@@ -86,7 +131,10 @@ export default function EmailsPage() {
         ) : (
           <div className="space-y-2">
             {emails.map((e) => (
-              <div key={`${e.accountEmail}-${e.id}`} className="bg-neutral-900 rounded-xl px-4 py-3">
+              <div
+                key={`${e.accountEmail}-${e.id}`}
+                className="bg-neutral-900 rounded-xl px-4 py-3"
+              >
                 <div className="flex justify-between items-start gap-2">
                   <span className="text-sm truncate text-neutral-300 flex items-center gap-2">
                     {e.unread && (
@@ -102,6 +150,43 @@ export default function EmailsPage() {
                 <p className="text-xs text-neutral-500 mt-1 line-clamp-1">
                   {e.snippet}
                 </p>
+
+                {sentIds.has(e.id) ? (
+                  <p className="text-xs text-amber-400 mt-2">Reply sent.</p>
+                ) : replyingTo === e.id ? (
+                  <div className="mt-2 space-y-2">
+                    <textarea
+                      value={replyText}
+                      onChange={(ev) => setReplyText(ev.target.value)}
+                      placeholder="Write your reply…"
+                      rows={3}
+                      autoFocus
+                      className="w-full bg-neutral-800 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400 resize-none"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => sendReply(e)}
+                        disabled={sending}
+                        className="bg-amber-400 text-neutral-950 text-xs font-medium px-4 py-1.5 rounded-full disabled:opacity-50"
+                      >
+                        {sending ? "Sending…" : "Send"}
+                      </button>
+                      <button
+                        onClick={() => setReplyingTo(null)}
+                        className="bg-neutral-800 text-neutral-300 text-xs px-4 py-1.5 rounded-full"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => openReply(e)}
+                    className="text-amber-400 text-xs font-medium mt-2"
+                  >
+                    Reply
+                  </button>
+                )}
               </div>
             ))}
           </div>
