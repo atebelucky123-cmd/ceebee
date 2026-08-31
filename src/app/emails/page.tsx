@@ -60,6 +60,13 @@ export default function EmailsPage() {
     setExpandedId(email.id);
     setFullBody(null);
     setBodyLoading(true);
+
+    // Optimistic: opening it counts as read immediately in the UI, the
+    // server call below makes it official on Gmail's side.
+    setEmails((prev) =>
+      prev.map((e) => (e.id === email.id ? { ...e, unread: false } : e))
+    );
+
     try {
       const res = await fetch(
         `/api/emails/${email.id}?accountLabel=${email.accountLabel}`
@@ -85,6 +92,7 @@ export default function EmailsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           accountLabel: email.accountLabel,
+          messageId: email.id,
           threadId: email.threadId,
           inReplyToMessageId: email.messageIdHeader,
           to: extractEmailAddress(email.from),
@@ -94,6 +102,9 @@ export default function EmailsPage() {
       });
       if (res.ok) {
         setSentIds((prev) => new Set(prev).add(email.id));
+        setEmails((prev) =>
+          prev.map((e) => (e.id === email.id ? { ...e, unread: false } : e))
+        );
         setReplyingTo(null);
       }
     } finally {

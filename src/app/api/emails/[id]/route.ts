@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase";
-import { getFullEmailBody } from "@/lib/gmail";
+import { getFullEmailBody, markAsRead } from "@/lib/gmail";
 
 export async function GET(
   req: NextRequest,
@@ -25,6 +25,7 @@ export async function GET(
 
   try {
     const result = await getFullEmailBody(account.refresh_token, id);
+    await markAsRead(account.refresh_token, id).catch(() => {});
     return NextResponse.json(result);
   } catch (err) {
     return NextResponse.json(

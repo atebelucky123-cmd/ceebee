@@ -134,4 +134,20 @@ create table if not exists chat_messages (
 alter table chat_messages enable row level security;
 create index if not exists chat_messages_conversation_idx on chat_messages (conversation_id);
 
+-- App settings: currently just holds which LLM model CeeBee should use.
+-- Single row, always id = 1.
+create table if not exists app_settings (
+  id smallint primary key default 1,
+  model text not null default 'llama-3.1-8b-instant',
+  updated_at timestamptz not null default now(),
+  constraint single_row check (id = 1)
+);
+alter table app_settings enable row level security;
+insert into app_settings (id, model) values (1, 'llama-3.1-8b-instant')
+  on conflict (id) do nothing;
+
+-- Track rate-limit hits per provider, since Gemini and Groq have separate,
+-- very different quotas (Gemini free tier is far stricter).
+alter table rate_limit_hits add column if not exists provider text default 'gemini';
+
 

@@ -33,13 +33,31 @@ export default function DevToolsPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
   const [pushStatus, setPushStatus] = useState<"idle" | "enabling" | "enabled" | "error">("idle");
+  const [models, setModels] = useState<{ id: string; label: string }[]>([]);
+  const [currentModel, setCurrentModel] = useState<string>("");
 
   useEffect(() => {
     fetch("/api/usage-stats")
       .then((r) => r.json())
       .then(setStats)
       .finally(() => setLoading(false));
+
+    fetch("/api/settings/model")
+      .then((r) => r.json())
+      .then((data) => {
+        setCurrentModel(data.model);
+        setModels(data.available ?? []);
+      });
   }, []);
+
+  async function changeModel(modelId: string) {
+    setCurrentModel(modelId);
+    await fetch("/api/settings/model", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: modelId }),
+    });
+  }
 
   async function enablePushNotifications() {
     setPushStatus("enabling");
@@ -84,6 +102,28 @@ export default function DevToolsPage() {
       </header>
 
       <main className="flex-1 px-4 py-4 space-y-4">
+        <div>
+          <h2 className="text-xs uppercase text-neutral-500 font-medium px-1 mb-2">
+            AI Model
+          </h2>
+          <div className="space-y-2">
+            {models.map((m) => (
+              <button
+                key={m.id}
+                onClick={() => changeModel(m.id)}
+                className={`w-full text-left px-4 py-3 rounded-xl text-sm flex justify-between items-center ${
+                  currentModel === m.id
+                    ? "bg-amber-400 text-neutral-950 font-medium"
+                    : "bg-neutral-900 text-neutral-300"
+                }`}
+              >
+                {m.label}
+                {currentModel === m.id && <span className="text-xs">Active</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <div>
           <h2 className="text-xs uppercase text-neutral-500 font-medium px-1 mb-2">
             Push Notifications

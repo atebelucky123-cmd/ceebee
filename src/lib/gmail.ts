@@ -80,6 +80,20 @@ export async function getFullEmailBody(refreshToken: string, messageId: string) 
   return { body: body || data.snippet || "(No content)" };
 }
 
+// Removes the UNREAD label -- called whenever the user opens/expands an
+// email or replies to it, so read status stays accurate without a manual
+// toggle.
+export async function markAsRead(refreshToken: string, messageId: string) {
+  const auth = getAuthenticatedClient(refreshToken);
+  const gmail = google.gmail({ version: "v1", auth });
+
+  await gmail.users.messages.modify({
+    userId: "me",
+    id: messageId,
+    requestBody: { removeLabelIds: ["UNREAD"] },
+  });
+}
+
 export async function sendEmail(
   refreshToken: string,
   to: string,

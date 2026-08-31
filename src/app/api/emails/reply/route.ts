@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase";
-import { sendReply } from "@/lib/gmail";
+import { sendReply, markAsRead } from "@/lib/gmail";
 
 export async function POST(req: NextRequest) {
-  const { accountLabel, threadId, inReplyToMessageId, to, subject, body } =
+  const { accountLabel, messageId, threadId, inReplyToMessageId, to, subject, body } =
     await req.json();
 
   if (!accountLabel || !threadId || !to || !body) {
@@ -32,6 +32,9 @@ export async function POST(req: NextRequest) {
       subject: subject ?? "",
       body,
     });
+    if (messageId) {
+      await markAsRead(account.refresh_token, messageId).catch(() => {});
+    }
     return NextResponse.json(result);
   } catch (err) {
     return NextResponse.json(
