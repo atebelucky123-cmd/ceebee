@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase";
+import { AVAILABLE_MODELS } from "@/lib/settings";
 
 export async function GET() {
   const supabase = getSupabaseServerClient();
@@ -15,23 +16,26 @@ export async function GET() {
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   const rows = data ?? [];
-  const totalRequests = rows.length;
-  const totalPromptTokens = rows.reduce((s, r) => s + (r.prompt_tokens ?? 0), 0);
-  const totalOutputTokens = rows.reduce((s, r) => s + (r.output_tokens ?? 0), 0);
-  const totalToolCalls = rows.reduce((s, r) => s + (r.tool_calls ?? 0), 0);
-  const avgLatency =
-    rows.length > 0
-      ? Math.round(rows.reduce((s, r) => s + (r.latency_ms ?? 0), 0) / rows.length)
-      : 0;
+
+  function summarize(modelId: string) {
+    const modelRows = rows.filter((r) => r.model === modelId);
+    const totalRequests = modelRows.length;
+    const totalPromptTokens = modelRows.reduce((s, r) => s + (r.prompt_tokens ?? 0), 0);
+    const totalOutputTokens = modelRows.reduce((s, r) => s + (r.output_tokens ?? 0), 0);
+    const totalToolCalls = modelRows.reduce((s, r) => s + (r.tool_calls ?? 0), 0);
+    const avgLatency =
+      modelRows.length > 0
+        ? Math.round(modelRows.reduce((s, r) => s + (r.latency_ms ?? 0), 0) / modelRows.length)
+        : 0;
+    return { totalRequests, totalPromptTokens, totalOutputTokens, totalToolCalls, avgLatencyMs: avgLatency };
+  }
+
+  const byModel = Object.fromEntries(
+    AVAILABLE_MODELS.map((m) => [m.id, { label: m.label, ...summarize(m.id) }])
+  );
 
   return NextResponse.json({
-    today: {
-      totalRequests,
-      totalPromptTokens,
-      totalOutputTokens,
-      totalToolCalls,
-      avgLatencyMs: avgLatency,
-    },
+    byModel,
     recent: rows.slice(0, 20),
   });
 }

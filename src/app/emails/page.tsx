@@ -35,11 +35,24 @@ export default function EmailsPage() {
   const [replyText, setReplyText] = useState("");
   const [sending, setSending] = useState(false);
   const [sentIds, setSentIds] = useState<Set<string>>(new Set());
+  const [countsByLabel, setCountsByLabel] = useState<Record<string, number>>({});
 
   useEffect(() => {
     fetch("/api/accounts")
       .then((r) => r.json())
       .then((data) => setAccounts(data.accounts ?? []));
+
+    // Unfiltered fetch, purely to compute unread counts per account tab --
+    // independent of whichever filter is currently displayed.
+    fetch("/api/emails")
+      .then((r) => r.json())
+      .then((data) => {
+        const counts: Record<string, number> = {};
+        for (const e of data.emails ?? []) {
+          if (e.unread) counts[e.accountLabel] = (counts[e.accountLabel] ?? 0) + 1;
+        }
+        setCountsByLabel(counts);
+      });
   }, []);
 
   useEffect(() => {
@@ -66,6 +79,12 @@ export default function EmailsPage() {
     setEmails((prev) =>
       prev.map((e) => (e.id === email.id ? { ...e, unread: false } : e))
     );
+    if (email.unread) {
+      setCountsByLabel((prev) => ({
+        ...prev,
+        [email.accountLabel]: Math.max((prev[email.accountLabel] ?? 1) - 1, 0),
+      }));
+    }
 
     try {
       const res = await fetch(
@@ -105,6 +124,12 @@ export default function EmailsPage() {
         setEmails((prev) =>
           prev.map((e) => (e.id === email.id ? { ...e, unread: false } : e))
         );
+        if (email.unread) {
+          setCountsByLabel((prev) => ({
+            ...prev,
+            [email.accountLabel]: Math.max((prev[email.accountLabel] ?? 1) - 1, 0),
+          }));
+        }
         setReplyingTo(null);
       }
     } finally {
@@ -129,25 +154,35 @@ export default function EmailsPage() {
           <div className="flex gap-2 overflow-x-auto pb-1 text-xs">
             <button
               onClick={() => setFilter(null)}
-              className={`px-3 py-1.5 rounded-full whitespace-nowrap ${
+              className={`px-3 py-1.5 rounded-full whitespace-nowrap flex items-center gap-1.5 ${
                 filter === null
                   ? "bg-amber-400 text-neutral-950"
                   : "bg-neutral-900 text-neutral-400"
               }`}
             >
               All accounts
+              {Object.values(countsByLabel).reduce((a, b) => a + b, 0) > 0 && (
+                <span className="bg-neutral-950/20 rounded-full min-w-[16px] h-4 px-1 flex items-center justify-center text-[10px] font-semibold">
+                  {Object.values(countsByLabel).reduce((a, b) => a + b, 0)}
+                </span>
+              )}
             </button>
             {accounts.map((a) => (
               <button
                 key={a.label}
                 onClick={() => setFilter(a.label)}
-                className={`px-3 py-1.5 rounded-full whitespace-nowrap capitalize ${
+                className={`px-3 py-1.5 rounded-full whitespace-nowrap capitalize flex items-center gap-1.5 ${
                   filter === a.label
                     ? "bg-amber-400 text-neutral-950"
                     : "bg-neutral-900 text-neutral-400"
                 }`}
               >
                 {a.label}
+                {!!countsByLabel[a.label] && (
+                  <span className="bg-amber-400/90 text-neutral-950 rounded-full min-w-[16px] h-4 px-1 flex items-center justify-center text-[10px] font-semibold">
+                    {countsByLabel[a.label]}
+                  </span>
+                )}
               </button>
             ))}
           </div>

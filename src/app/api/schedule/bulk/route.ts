@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase";
 
-// action: "clear" marks every event on the given date as done (greyed out);
-// "unclear" resets them all back to not-done.
+// "clear" greys out/locks whatever is still undone for the day (sets
+// cleared=true on rows where done=false) -- it does NOT touch anything
+// already marked done. "unclear" reverses that, resetting cleared back to
+// false, again without touching done rows.
 export async function POST(req: NextRequest) {
   const { date, action } = await req.json();
 
@@ -16,8 +18,9 @@ export async function POST(req: NextRequest) {
   const supabase = getSupabaseServerClient();
   const { data, error } = await supabase
     .from("schedule_events")
-    .update({ done: action === "clear" })
+    .update({ cleared: action === "clear" })
     .eq("event_date", date)
+    .eq("done", false)
     .select();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });

@@ -10,23 +10,39 @@ const REMIND_OPTIONS = [
   { label: "1 hour before", value: "60" },
 ];
 
+type ScheduleEventLike = {
+  id: string;
+  title: string;
+  description: string | null;
+  event_date: string;
+  start_time: string | null;
+  end_time: string | null;
+  meeting_link: string | null;
+  priority: number;
+  remind_before_minutes: number | null;
+};
+
 export default function AddEventForm({
   defaultDate,
+  editingEvent,
   onCreated,
   onClose,
 }: {
   defaultDate: string;
+  editingEvent?: ScheduleEventLike | null;
   onCreated: () => void;
   onClose: () => void;
 }) {
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [eventDate, setEventDate] = useState(defaultDate);
-  const [startTime, setStartTime] = useState("");
-  const [endTime, setEndTime] = useState("");
-  const [meetingLink, setMeetingLink] = useState("");
-  const [priority, setPriority] = useState(3);
-  const [remindBefore, setRemindBefore] = useState("");
+  const [title, setTitle] = useState(editingEvent?.title ?? "");
+  const [description, setDescription] = useState(editingEvent?.description ?? "");
+  const [eventDate, setEventDate] = useState(editingEvent?.event_date ?? defaultDate);
+  const [startTime, setStartTime] = useState(editingEvent?.start_time?.slice(0, 5) ?? "");
+  const [endTime, setEndTime] = useState(editingEvent?.end_time?.slice(0, 5) ?? "");
+  const [meetingLink, setMeetingLink] = useState(editingEvent?.meeting_link ?? "");
+  const [priority, setPriority] = useState(editingEvent?.priority ?? 3);
+  const [remindBefore, setRemindBefore] = useState(
+    editingEvent?.remind_before_minutes ? String(editingEvent.remind_before_minutes) : ""
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -39,21 +55,29 @@ export default function AddEventForm({
     setSaving(true);
     setError("");
 
+    const payload = {
+      title,
+      description: description || null,
+      event_date: eventDate,
+      start_time: startTime || null,
+      end_time: endTime || null,
+      meeting_link: meetingLink || null,
+      priority,
+      remind_before_minutes: remindBefore ? Number(remindBefore) : null,
+    };
+
     try {
-      const res = await fetch("/api/schedule", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title,
-          description: description || null,
-          event_date: eventDate,
-          start_time: startTime || null,
-          end_time: endTime || null,
-          meeting_link: meetingLink || null,
-          priority,
-          remind_before_minutes: remindBefore ? Number(remindBefore) : null,
-        }),
-      });
+      const res = editingEvent
+        ? await fetch(`/api/schedule/${editingEvent.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          })
+        : await fetch("/api/schedule", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
 
       if (!res.ok) {
         const data = await res.json();
@@ -74,7 +98,7 @@ export default function AddEventForm({
     <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50">
       <div className="bg-neutral-900 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-md max-h-[85vh] overflow-y-auto p-5">
         <div className="flex justify-between items-center mb-4">
-          <h2 className="font-semibold text-lg">New Event</h2>
+          <h2 className="font-semibold text-lg">{editingEvent ? "Edit Event" : "New Event"}</h2>
           <button
             onClick={onClose}
             className="text-neutral-500 text-sm px-2 py-1"
@@ -189,7 +213,7 @@ export default function AddEventForm({
             disabled={saving}
             className="w-full bg-amber-400 text-neutral-950 rounded-full py-2.5 font-medium text-sm disabled:opacity-50 mt-2"
           >
-            {saving ? "Saving…" : "Add Event"}
+            {saving ? "Saving…" : editingEvent ? "Save Changes" : "Add Event"}
           </button>
         </form>
       </div>

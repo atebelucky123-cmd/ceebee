@@ -5,7 +5,7 @@ import { getSupabaseServerClient } from "@/lib/supabase";
 // message instead of hammering into the real limit and erroring out.
 const INTERNAL_RPM_LIMITS: Record<string, number> = {
   gemini: 15, // Google's actual free-tier RPM varies by model/project; stay well under it
-  groq: 25, // llama-3.1-8b-instant allows 30 RPM
+  groq: 25, // openai/gpt-oss-120b allows 30 RPM (confirmed on Shina's account)
 };
 
 export async function checkRateLimit(provider: "gemini" | "groq"): Promise<boolean> {

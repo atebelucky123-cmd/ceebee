@@ -6,12 +6,21 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const { done } = await req.json();
+  const body = await req.json();
+
+  const update: Record<string, unknown> = {};
+  if ("done" in body) {
+    update.done = body.done;
+    update.completed_at = body.done ? new Date().toISOString() : null;
+  }
+  for (const key of ["title", "due_date", "start_time", "end_time"]) {
+    if (key in body) update[key] = body[key];
+  }
 
   const supabase = getSupabaseServerClient();
   const { data, error } = await supabase
     .from("tasks")
-    .update({ done, completed_at: done ? new Date().toISOString() : null })
+    .update(update)
     .eq("id", id)
     .select()
     .single();

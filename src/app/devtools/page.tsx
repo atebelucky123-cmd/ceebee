@@ -10,14 +10,17 @@ function urlBase64ToUint8Array(base64String: string) {
   return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
 }
 
+type ModelStats = {
+  label: string;
+  totalRequests: number;
+  totalPromptTokens: number;
+  totalOutputTokens: number;
+  totalToolCalls: number;
+  avgLatencyMs: number;
+};
+
 type Stats = {
-  today: {
-    totalRequests: number;
-    totalPromptTokens: number;
-    totalOutputTokens: number;
-    totalToolCalls: number;
-    avgLatencyMs: number;
-  };
+  byModel: Record<string, ModelStats>;
   recent: {
     id: string;
     model: string;
@@ -155,22 +158,21 @@ export default function DevToolsPage() {
           <>
             <div>
               <h2 className="text-xs uppercase text-neutral-500 font-medium px-1 mb-2">
-                Today&apos;s Gemini Usage
+                Today&apos;s Usage by Model
               </h2>
-              <div className="grid grid-cols-2 gap-2">
-                <StatCard label="Requests" value={stats.today.totalRequests} />
-                <StatCard label="Tool calls" value={stats.today.totalToolCalls} />
-                <StatCard label="Prompt tokens" value={stats.today.totalPromptTokens} />
-                <StatCard label="Output tokens" value={stats.today.totalOutputTokens} />
-                <StatCard label="Avg latency" value={`${stats.today.avgLatencyMs}ms`} />
-                <StatCard
-                  label="Req / interaction"
-                  value={
-                    stats.today.totalRequests > 0
-                      ? (stats.today.totalRequests / stats.today.totalRequests).toFixed(2)
-                      : "—"
-                  }
-                />
+              <div className="space-y-3">
+                {Object.entries(stats.byModel).map(([modelId, m]) => (
+                  <div key={modelId}>
+                    <p className="text-xs text-neutral-400 px-1 mb-1">{m.label}</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <StatCard label="Requests" value={m.totalRequests} />
+                      <StatCard label="Tool calls" value={m.totalToolCalls} />
+                      <StatCard label="Prompt tokens" value={m.totalPromptTokens} />
+                      <StatCard label="Output tokens" value={m.totalOutputTokens} />
+                      <StatCard label="Avg latency" value={`${m.avgLatencyMs}ms`} />
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -192,6 +194,7 @@ export default function DevToolsPage() {
                           minute: "2-digit",
                         })}
                       </span>
+                      <span className="text-neutral-500 truncate max-w-[80px]">{r.model}</span>
                       <span className="text-neutral-300">
                         {r.prompt_tokens ?? 0}+{r.output_tokens ?? 0} tok
                       </span>

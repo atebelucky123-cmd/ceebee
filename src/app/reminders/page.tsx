@@ -11,11 +11,20 @@ type ScheduleEvent = {
   remind_before_minutes: number | null;
 };
 
+const REMIND_OPTIONS = [
+  { label: "5 minutes before", value: "5" },
+  { label: "10 minutes before", value: "10" },
+  { label: "30 minutes before", value: "30" },
+  { label: "1 hour before", value: "60" },
+];
+
 export default function RemindersPage() {
   const [events, setEvents] = useState<ScheduleEvent[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState<ScheduleEvent | null>(null);
 
-  useEffect(() => {
+  function load() {
     fetch("/api/schedule?sort=time")
       .then((r) => r.json())
       .then((data) => {
@@ -25,7 +34,14 @@ export default function RemindersPage() {
         setEvents(withReminders);
       })
       .finally(() => setLoading(false));
-  }, []);
+  }
+
+  useEffect(load, []);
+
+  async function deleteReminder(id: string) {
+    await fetch(`/api/schedule/${id}`, { method: "DELETE" });
+    load();
+  }
 
   return (
     <div className="flex flex-col flex-1 min-h-0 w-full overflow-y-auto">
@@ -39,15 +55,22 @@ export default function RemindersPage() {
         <h1 className="font-semibold text-lg">Reminders</h1>
       </header>
 
-      <main className="flex-1 px-4 py-4 space-y-2">
+      <main className="flex-1 px-4 py-4 space-y-3">
+        <button
+          onClick={() => {
+            setEditing(null);
+            setShowForm(true);
+          }}
+          className="w-full bg-amber-400 text-neutral-950 rounded-full py-2.5 font-medium text-sm"
+        >
+          + Add Reminder
+        </button>
+
         {loading ? (
-          <div className="text-neutral-500 text-sm text-center py-8">
-            Loading…
-          </div>
+          <div className="text-neutral-500 text-sm text-center py-8">Loading…</div>
         ) : events.length === 0 ? (
           <div className="text-neutral-500 text-sm text-center py-8">
-            No reminders set. Add one when creating an event on your
-            Schedule.
+            No reminders set.
           </div>
         ) : (
           events.map((e) => (
@@ -55,13 +78,161 @@ export default function RemindersPage() {
               <div className="text-sm font-medium">{e.title}</div>
               <div className="text-xs text-neutral-500 mt-1">
                 {e.event_date}
-                {e.start_time ? ` at ${e.start_time.slice(0, 5)}` : ""} —
-                reminder {e.remind_before_minutes} min before
+                {e.start_time ? ` at ${e.start_time.slice(0, 5)}` : ""} — reminder{" "}
+                {e.remind_before_minutes} min before
+              </div>
+              <div className="flex gap-3 mt-2 text-xs">
+                <button
+                  onClick={() => {
+                    setEditing(e);
+                    setShowForm(true);
+                  }}
+                  className="text-neutral-400"
+                >
+                  Edit
+                </button>
+                <button onClick={() => deleteReminder(e.id)} className="text-neutral-600">
+                  Delete
+                </button>
               </div>
             </div>
           ))
         )}
       </main>
+
+      {showForm && (
+        <ReminderForm
+          editing={editing}
+          onClose={() => setShowForm(false)}
+          onSaved={load}
+        />
+      )}
+    </div>
+  );
+}
+
+function ReminderForm({
+  editing,
+  onClose,
+  onSaved,
+}: {
+  editing: ScheduleEvent | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [title, setTitle] = useState(editing?.title ?? "");
+  const [date, setDate] = useState(editing?.event_date ?? new Date().toISOString().slice(0, 10));
+  const [time, setTime] = useState(editing?.start_time?.slice(0, 5) ?? "");
+  const [remindBefore, setRemindBefore] = useState(
+    editing?.remind_before_minutes ? String(editing.remind_before_minutes) : "10"
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!title.trim()) {
+      setError("Give the reminder a title.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+
+    // Reminders are lightweight schedule_events -- just title, date, time,
+    // and a reminder offset, without the full event form's extra fields.
+    const payload = {
+      title,
+      event_date: date,
+      start_time: time || null,
+      priority: 3,
+      remind_before_minutes: Number(remindBefore),
+    };
+
+    try {
+      const res = editing
+        ? await fetch(`/api/schedule/${editing.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          })
+        : await fetch("/api/schedule", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+      if (!res.ok) {
+        const data = await res.json();
+        setError(data.error ?? "Something went wrong.");
+        setSaving(false);
+        return;
+      }
+
+      onSaved();
+      onClose();
+    } catch {
+      setError("Couldn't reach the server.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50">
+      <div className="bg-neutral-900 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-md p-5">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="font-semibold text-lg">{editing ? "Edit Reminder" : "New Reminder"}</h2>
+          <button onClick={onClose} className="text-neutral-500 text-sm px-2 py-1">
+            Cancel
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Remind me about…"
+            className="w-full bg-neutral-800 rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+            autoFocus
+          />
+
+          <div className="grid grid-cols-2 gap-3">
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="w-full bg-neutral-800 rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+            />
+            <input
+              type="time"
+              value={time}
+              onChange={(e) => setTime(e.target.value)}
+              className="w-full bg-neutral-800 rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+            />
+          </div>
+
+          <select
+            value={remindBefore}
+            onChange={(e) => setRemindBefore(e.target.value)}
+            className="w-full bg-neutral-800 rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+          >
+            {REMIND_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+
+          {error && <p className="text-red-400 text-xs">{error}</p>}
+
+          <button
+            type="submit"
+            disabled={saving}
+            className="w-full bg-amber-400 text-neutral-950 rounded-full py-2.5 font-medium text-sm disabled:opacity-50"
+          >
+            {saving ? "Saving…" : editing ? "Save Changes" : "Add Reminder"}
+          </button>
+        </form>
+      </div>
     </div>
   );
 }

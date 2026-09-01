@@ -23,6 +23,7 @@ type ScheduleEvent = {
   priority: number;
   remind_before_minutes: number | null;
   done: boolean;
+  cleared: boolean;
 };
 
 type TopView = "today" | "productivity";
@@ -41,20 +42,41 @@ export default function DashboardPage() {
   const [todayTab, setTodayTab] = useState<TodayTab>("schedule");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [events, setEvents] = useState<ScheduleEvent[]>([]);
+  const [calEvents, setCalEvents] = useState<
+    { id: string; title: string; start: string; end: string; meetLink: string | null }[]
+  >([]);
   const [sortBy, setSortBy] = useState<"time" | "priority">("time");
   const [loading, setLoading] = useState(true);
   const [showAddEvent, setShowAddEvent] = useState(false);
+  const [editingEvent, setEditingEvent] = useState<ScheduleEvent | null>(null);
   const [selectedDate, setSelectedDate] = useState(todayISO());
+  const [unreadEmailCount, setUnreadEmailCount] = useState(0);
+
+  useEffect(() => {
+    fetch("/api/emails")
+      .then((r) => r.json())
+      .then((data) => {
+        const count = (data.emails ?? []).filter((e: { unread: boolean }) => e.unread).length;
+        setUnreadEmailCount(count);
+      })
+      .catch(() => {});
+  }, []);
+
+  function calRangeFor(dateStr: string) {
+    const start = new Date(`${dateStr}T00:00:00`);
+    const end = new Date(`${dateStr}T23:59:59`);
+    return `start=${start.toISOString()}&end=${end.toISOString()}`;
+  }
 
   function reload() {
     Promise.all([
       fetch("/api/tasks").then((r) => r.json()),
-      fetch(`/api/schedule?date=${selectedDate}&sort=${sortBy}`).then((r) =>
-        r.json()
-      ),
-    ]).then(([taskData, eventData]) => {
+      fetch(`/api/schedule?date=${selectedDate}&sort=${sortBy}`).then((r) => r.json()),
+      fetch(`/api/calendar?${calRangeFor(selectedDate)}`).then((r) => r.json()),
+    ]).then(([taskData, eventData, calData]) => {
       setTasks(taskData.tasks ?? []);
       setEvents(eventData.events ?? []);
+      setCalEvents(calData.events ?? []);
     });
   }
 
@@ -62,13 +84,13 @@ export default function DashboardPage() {
     setLoading(true);
     Promise.all([
       fetch("/api/tasks").then((r) => r.json()),
-      fetch(`/api/schedule?date=${selectedDate}&sort=${sortBy}`).then((r) =>
-        r.json()
-      ),
+      fetch(`/api/schedule?date=${selectedDate}&sort=${sortBy}`).then((r) => r.json()),
+      fetch(`/api/calendar?${calRangeFor(selectedDate)}`).then((r) => r.json()),
     ])
-      .then(([taskData, eventData]) => {
+      .then(([taskData, eventData, calData]) => {
         setTasks(taskData.tasks ?? []);
         setEvents(eventData.events ?? []);
+        setCalEvents(calData.events ?? []); // silently empty if no account connected
       })
       .finally(() => setLoading(false));
   }, [sortBy, selectedDate]);
@@ -120,16 +142,21 @@ export default function DashboardPage() {
             { href: "/tasks", label: "Tasks" },
             { href: "/notes", label: "Notes" },
             { href: "/reminders", label: "Reminders" },
-            { href: "/emails", label: "Emails" },
+            { href: "/emails", label: "Emails", badge: unreadEmailCount },
             { href: "/calendar", label: "Calendar" },
             { href: "/weather", label: "Weather" },
           ].map((item) => (
             <Link
               key={item.href}
               href={item.href}
-              className="shrink-0 bg-neutral-900 text-neutral-300 text-xs px-3 py-1.5 rounded-full"
+              className="shrink-0 bg-neutral-900 text-neutral-300 text-xs px-3 py-1.5 rounded-full flex items-center gap-1.5"
             >
               {item.label}
+              {!!item.badge && (
+                <span className="bg-amber-400 text-neutral-950 rounded-full min-w-[16px] h-4 px-1 flex items-center justify-center text-[10px] font-semibold">
+                  {item.badge}
+                </span>
+              )}
             </Link>
           ))}
         </div>
@@ -176,17 +203,20 @@ export default function DashboardPage() {
               <MyDay
                 tasks={undoneTasks}
                 events={events}
+                calEvents={calEvents}
                 onToggleTask={toggleTask}
               />
             ) : (
               <>
                 <Schedule
                   events={events}
+                  calEvents={calEvents}
                   sortBy={sortBy}
                   onSortChange={setSortBy}
                   onReload={reload}
                   selectedDate={selectedDate}
                   onDateChange={setSelectedDate}
+                  onEdit={(e) => setEditingEvent(e)}
                 />
                 <button
                   onClick={() => setShowAddEvent(true)}
@@ -205,6 +235,15 @@ export default function DashboardPage() {
           defaultDate={selectedDate}
           onCreated={reload}
           onClose={() => setShowAddEvent(false)}
+        />
+      )}
+
+      {editingEvent && (
+        <AddEventForm
+          defaultDate={selectedDate}
+          editingEvent={editingEvent}
+          onCreated={reload}
+          onClose={() => setEditingEvent(null)}
         />
       )}
     </div>
@@ -289,13 +328,15 @@ function ProductivitySummary({
 function MyDay({
   tasks,
   events,
+  calEvents,
   onToggleTask,
 }: {
   tasks: Task[];
   events: ScheduleEvent[];
+  calEvents: { id: string; title: string; start: string; meetLink: string | null }[];
   onToggleTask: (id: string, done: boolean) => void;
 }) {
-  if (tasks.length === 0 && events.length === 0) {
+  if (tasks.length === 0 && events.length === 0 && calEvents.length === 0) {
     return (
       <div className="text-neutral-500 text-sm text-center py-8">
         Nothing on your plate today. Ask CeeBee to add something.
@@ -305,6 +346,34 @@ function MyDay({
 
   return (
     <div className="space-y-4">
+      {calEvents.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-xs uppercase text-neutral-500 font-medium px-1">
+            Calendar
+          </h3>
+          {calEvents.map((e) => (
+            <div key={e.id} className="bg-neutral-900 rounded-xl px-4 py-3">
+              <div className="flex justify-between items-start">
+                <span className="font-medium text-sm">{e.title}</span>
+                <span className="text-xs text-neutral-500">
+                  {new Date(e.start).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+                </span>
+              </div>
+              {e.meetLink && (
+                <a
+                  href={e.meetLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-amber-400 text-xs underline mt-1 inline-block"
+                >
+                  Join meeting
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       {events.length > 0 && (
         <div className="space-y-2">
           <h3 className="text-xs uppercase text-neutral-500 font-medium px-1">
@@ -357,18 +426,22 @@ function MyDay({
 
 function Schedule({
   events,
+  calEvents,
   sortBy,
   onSortChange,
   onReload,
   selectedDate,
   onDateChange,
+  onEdit,
 }: {
   events: ScheduleEvent[];
+  calEvents: { id: string; title: string; start: string; meetLink: string | null }[];
   sortBy: "time" | "priority";
   onSortChange: (sort: "time" | "priority") => void;
   onReload: () => void;
   selectedDate: string;
   onDateChange: (date: string) => void;
+  onEdit: (event: ScheduleEvent) => void;
 }) {
   const [bulkLoading, setBulkLoading] = useState(false);
 
@@ -378,6 +451,11 @@ function Schedule({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ done }),
     });
+    onReload();
+  }
+
+  async function deleteEvent(id: string) {
+    await fetch(`/api/schedule/${id}`, { method: "DELETE" });
     onReload();
   }
 
@@ -392,7 +470,8 @@ function Schedule({
     setBulkLoading(false);
   }
 
-  const allDone = events.length > 0 && events.every((e) => e.done);
+  const anyCleared = events.some((e) => e.cleared);
+  const anyClearable = events.some((e) => !e.done && !e.cleared);
 
   return (
     <div className="space-y-3">
@@ -404,13 +483,13 @@ function Schedule({
       />
 
       <div className="flex justify-between items-center text-xs">
-        {events.length > 0 && (
+        {(anyCleared || anyClearable) && (
           <button
-            onClick={() => bulkAction(allDone ? "unclear" : "clear")}
+            onClick={() => bulkAction(anyCleared ? "unclear" : "clear")}
             disabled={bulkLoading}
             className="bg-amber-400 text-neutral-950 font-medium px-3 py-1.5 rounded-full disabled:opacity-50"
           >
-            {allDone ? "Unclear Schedule" : "Clear Schedule"}
+            {anyCleared ? "Unclear Schedule" : "Clear Schedule"}
           </button>
         )}
         <div className="flex gap-2 ml-auto">
@@ -431,7 +510,35 @@ function Schedule({
         </div>
       </div>
 
-      {events.length === 0 ? (
+      {calEvents.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-xs uppercase text-neutral-500 font-medium px-1">
+            Calendar
+          </h3>
+          {calEvents.map((e) => (
+            <div key={e.id} className="bg-neutral-900 rounded-xl px-4 py-3">
+              <div className="flex justify-between items-start">
+                <span className="font-medium text-sm">{e.title}</span>
+                <span className="text-xs text-neutral-500">
+                  {new Date(e.start).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+                </span>
+              </div>
+              {e.meetLink && (
+                <a
+                  href={e.meetLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-amber-400 text-xs underline mt-1 inline-block"
+                >
+                  Join meeting
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {events.length === 0 && calEvents.length === 0 ? (
         <div className="text-neutral-500 text-sm text-center py-8">
           No events scheduled for this day.
         </div>
@@ -440,7 +547,7 @@ function Schedule({
           <div
             key={e.id}
             className={`bg-neutral-900 rounded-xl px-4 py-3 transition-opacity ${
-              e.done ? "opacity-40" : ""
+              e.done ? "opacity-40" : e.cleared ? "opacity-30 pointer-events-none" : ""
             }`}
           >
             <div className="flex justify-between items-start gap-2">
@@ -448,14 +555,11 @@ function Schedule({
                 <input
                   type="checkbox"
                   checked={e.done}
+                  disabled={e.cleared}
                   onChange={(ev) => toggleDone(e.id, ev.target.checked)}
                   className="w-4 h-4 accent-amber-400 mt-0.5 shrink-0"
                 />
-                <span
-                  className={`font-medium text-sm ${
-                    e.done ? "line-through" : ""
-                  }`}
-                >
+                <span className={`font-medium text-sm ${e.done ? "line-through" : ""}`}>
                   {e.title}
                 </span>
               </label>
@@ -464,11 +568,9 @@ function Schedule({
               </span>
             </div>
             {e.description && (
-              <p className="text-xs text-neutral-400 mt-1 ml-6">
-                {e.description}
-              </p>
+              <p className="text-xs text-neutral-400 mt-1 ml-6">{e.description}</p>
             )}
-            <div className="flex gap-3 mt-2 text-xs text-neutral-500 ml-6">
+            <div className="flex gap-3 mt-2 text-xs text-neutral-500 ml-6 items-center">
               {e.start_time && (
                 <span>
                   {e.start_time.slice(0, 5)}
@@ -485,9 +587,13 @@ function Schedule({
                   Join meeting
                 </a>
               )}
-              {e.remind_before_minutes && (
-                <span>Reminder: {e.remind_before_minutes}m before</span>
-              )}
+              {e.remind_before_minutes && <span>Reminder: {e.remind_before_minutes}m before</span>}
+              <button onClick={() => onEdit(e)} className="text-neutral-400 ml-auto">
+                Edit
+              </button>
+              <button onClick={() => deleteEvent(e.id)} className="text-neutral-600">
+                Delete
+              </button>
             </div>
           </div>
         ))

@@ -19,6 +19,10 @@ export default function TasksPage() {
   const [startTime, setStartTime] = useState("");
   const [endTime, setEndTime] = useState("");
   const [loading, setLoading] = useState(true);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editStart, setEditStart] = useState("");
+  const [editEnd, setEditEnd] = useState("");
 
   function load() {
     fetch("/api/tasks")
@@ -61,6 +65,27 @@ export default function TasksPage() {
   async function deleteTask(id: string) {
     setTasks((prev) => prev.filter((t) => t.id !== id));
     await fetch(`/api/tasks/${id}`, { method: "DELETE" });
+  }
+
+  function startEdit(t: Task) {
+    setEditingId(t.id);
+    setEditTitle(t.title);
+    setEditStart(t.start_time?.slice(0, 5) ?? "");
+    setEditEnd(t.end_time?.slice(0, 5) ?? "");
+  }
+
+  async function saveEdit(id: string) {
+    await fetch(`/api/tasks/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: editTitle,
+        start_time: editStart || null,
+        end_time: editEnd || null,
+      }),
+    });
+    setEditingId(null);
+    load();
   }
 
   return (
@@ -138,40 +163,82 @@ export default function TasksPage() {
           </div>
         ) : (
           <div className="space-y-2">
-            {tasks.map((t) => (
-              <div
-                key={t.id}
-                className="flex items-center gap-3 bg-neutral-900 rounded-xl px-4 py-3"
-              >
-                <input
-                  type="checkbox"
-                  checked={t.done}
-                  onChange={(e) => toggleTask(t.id, e.target.checked)}
-                  className="w-4 h-4 accent-amber-400"
-                />
-                <div className="flex-1">
-                  <span
-                    className={`text-sm ${
-                      t.done ? "line-through text-neutral-500" : ""
-                    }`}
-                  >
-                    {t.title}
-                  </span>
-                  {(t.start_time || t.end_time) && (
-                    <div className="text-xs text-neutral-500">
-                      {t.start_time?.slice(0, 5)}
-                      {t.end_time && ` - ${t.end_time.slice(0, 5)}`}
-                    </div>
-                  )}
+            {tasks.map((t) =>
+              editingId === t.id ? (
+                <div key={t.id} className="bg-neutral-900 rounded-xl px-4 py-3 space-y-2">
+                  <input
+                    value={editTitle}
+                    onChange={(e) => setEditTitle(e.target.value)}
+                    autoFocus
+                    className="w-full bg-neutral-800 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+                  />
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      type="time"
+                      value={editStart}
+                      onChange={(e) => setEditStart(e.target.value)}
+                      className="w-full bg-neutral-800 rounded-lg px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+                    />
+                    <input
+                      type="time"
+                      value={editEnd}
+                      onChange={(e) => setEditEnd(e.target.value)}
+                      className="w-full bg-neutral-800 rounded-lg px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => saveEdit(t.id)}
+                      className="bg-amber-400 text-neutral-950 text-xs font-medium px-4 py-1.5 rounded-full"
+                    >
+                      Save
+                    </button>
+                    <button
+                      onClick={() => setEditingId(null)}
+                      className="bg-neutral-800 text-neutral-300 text-xs px-4 py-1.5 rounded-full"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
-                <button
-                  onClick={() => deleteTask(t.id)}
-                  className="text-neutral-600 text-xs"
+              ) : (
+                <div
+                  key={t.id}
+                  className="flex items-center gap-3 bg-neutral-900 rounded-xl px-4 py-3"
                 >
-                  Remove
-                </button>
-              </div>
-            ))}
+                  <input
+                    type="checkbox"
+                    checked={t.done}
+                    onChange={(e) => toggleTask(t.id, e.target.checked)}
+                    className="w-4 h-4 accent-amber-400"
+                  />
+                  <button
+                    onClick={() => startEdit(t)}
+                    className="flex-1 text-left"
+                  >
+                    <span
+                      className={`text-sm ${
+                        t.done ? "line-through text-neutral-500" : ""
+                      }`}
+                    >
+                      {t.title}
+                    </span>
+                    {(t.start_time || t.end_time) && (
+                      <div className="text-xs text-neutral-500">
+                        {t.start_time?.slice(0, 5)}
+                        {t.end_time && ` - ${t.end_time.slice(0, 5)}`}
+                      </div>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => deleteTask(t.id)}
+                    className="text-neutral-600 text-xs"
+                  >
+                    Remove
+                  </button>
+                </div>
+              )
+            )}
           </div>
         )}
       </main>

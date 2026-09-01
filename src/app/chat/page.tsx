@@ -6,6 +6,19 @@ import ChatSidebar from "../components/ChatSidebar";
 
 type Message = { role: "user" | "model"; text: string; time: string };
 
+// Web Speech API isn't in TypeScript's standard DOM types, so we declare
+// just the bits CeeBee's mic button needs.
+type SpeechRecognitionLike = {
+  lang: string;
+  interimResults: boolean;
+  continuous: boolean;
+  start: () => void;
+  stop: () => void;
+  onresult: ((event: { results: { [i: number]: { [j: number]: { transcript: string } } } }) => void) | null;
+  onend: (() => void) | null;
+  onerror: (() => void) | null;
+};
+
 function nowISO() {
   return new Date().toISOString();
 }
@@ -23,8 +36,16 @@ export default function ChatPage() {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editText, setEditText] = useState("");
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [listening, setListening] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Refs update synchronously (unlike state), which matters here: without
+  // this, calling ensureConversation() twice in one send cycle (once for
+  // the user message, once inside requestReply) would each see a stale
+  // null conversationId and create two separate conversations -- splitting
+  // the user's message and CeeBee's reply into different chat histories.
+  const conversationIdRef = useRef<string | null>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -39,14 +60,16 @@ export default function ChatPage() {
   }, [input]);
 
   async function ensureConversation(): Promise<string> {
-    if (conversationId) return conversationId;
+    if (conversationIdRef.current) return conversationIdRef.current;
     const res = await fetch("/api/conversations", { method: "POST" });
     const data = await res.json();
+    conversationIdRef.current = data.conversation.id;
     setConversationId(data.conversation.id);
     return data.conversation.id;
   }
 
   async function loadConversation(id: string) {
+    conversationIdRef.current = id;
     setConversationId(id);
     const res = await fetch(`/api/conversations/${id}/messages`);
     const data = await res.json();
@@ -60,6 +83,7 @@ export default function ChatPage() {
   }
 
   function startNewChat() {
+    conversationIdRef.current = null;
     setConversationId(null);
     setMessages([]);
   }
@@ -70,6 +94,7 @@ export default function ChatPage() {
     setLoading(true);
     const convId = await ensureConversation();
 
+    let replyText: string;
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
@@ -83,22 +108,53 @@ export default function ChatPage() {
         }),
       });
       const data = await res.json();
-      const replyText = res.ok ? data.reply : `⚠️ ${data.error}`;
-      const replyMsg: Message = { role: "model", text: replyText, time: nowISO() };
-      setMessages((prev) => [...prev, replyMsg]);
-      await fetch(`/api/conversations/${convId}/messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role: "model", content: replyText }),
-      });
+      replyText = res.ok ? data.reply : `⚠️ ${data.error}`;
     } catch {
-      setMessages((prev) => [
-        ...prev,
-        { role: "model", text: "⚠️ Couldn't reach CeeBee. Check your connection.", time: nowISO() },
-      ]);
-    } finally {
-      setLoading(false);
+      replyText = "⚠️ Couldn't reach CeeBee. Check your connection.";
     }
+
+    const replyMsg: Message = { role: "model", text: replyText, time: nowISO() };
+    setMessages((prev) => [...prev, replyMsg]);
+    await fetch(`/api/conversations/${convId}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role: "model", content: replyText }),
+    });
+    setLoading(false);
+  }
+
+  function toggleListening() {
+    if (listening) {
+      recognitionRef.current?.stop();
+      setListening(false);
+      return;
+    }
+
+    const SpeechRecognitionCtor =
+      (window as unknown as { SpeechRecognition?: new () => SpeechRecognitionLike; webkitSpeechRecognition?: new () => SpeechRecognitionLike })
+        .SpeechRecognition ??
+      (window as unknown as { webkitSpeechRecognition?: new () => SpeechRecognitionLike }).webkitSpeechRecognition;
+
+    if (!SpeechRecognitionCtor) {
+      alert("Voice input isn't supported in this browser.");
+      return;
+    }
+
+    const recognition = new SpeechRecognitionCtor();
+    recognition.lang = "en-US";
+    recognition.interimResults = false;
+    recognition.continuous = false;
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      setInput((prev) => (prev ? `${prev} ${transcript}` : transcript));
+    };
+    recognition.onend = () => setListening(false);
+    recognition.onerror = () => setListening(false);
+
+    recognitionRef.current = recognition;
+    recognition.start();
+    setListening(true);
   }
 
   async function sendMessage() {
@@ -272,15 +328,38 @@ export default function ChatPage() {
       </main>
 
       <div className="p-3 border-t border-neutral-800 flex gap-2 items-end">
+        <button
+          onClick={toggleListening}
+          className={`shrink-0 rounded-full p-2.5 ${
+            listening ? "bg-red-500 text-white" : "bg-neutral-900 text-neutral-400"
+          }`}
+          aria-label="Voice input"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+            <rect x="9" y="2" width="6" height="12" rx="3" fill="currentColor" />
+            <path
+              d="M5 11a7 7 0 0014 0M12 18v3"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+            />
+          </svg>
+        </button>
         <textarea
           ref={textareaRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
+            const isDesktop =
+              typeof window !== "undefined" &&
+              window.matchMedia?.("(pointer: fine)").matches;
+            if (e.key === "Enter" && !e.shiftKey && isDesktop) {
               e.preventDefault();
               sendMessage();
             }
+            // On touch devices, Enter falls through to its normal
+            // behavior -- inserting a newline -- since Send is a
+            // dedicated button there, not a keyboard shortcut.
           }}
           placeholder="Ask CeeBee anything…"
           rows={1}

@@ -110,6 +110,20 @@ function selectTools(message: string): NeutralTool[] | undefined {
   return ALL_TOOLS.filter((t) => matchedNames.has(t.name));
 }
 
+// GPT-OSS's reasoning trace costs real tokens -- keep it off for the simple
+// stuff (calendar, weather, chit-chat) and only switch it on when the
+// message actually calls for multi-step thinking or planning.
+const DEEP_REASONING_KEYWORDS = [
+  "plan", "compare", "analyze", "strategy", "should i", "pros and cons",
+  "explain why", "think through", "decide between", "help me figure out",
+  "write code", "debug", "algorithm",
+];
+
+function needsDeepReasoning(message: string): boolean {
+  const lower = message.toLowerCase();
+  return DEEP_REASONING_KEYWORDS.some((k) => lower.includes(k));
+}
+
 // --- Provider adapters -----------------------------------------------------
 
 type ProviderResult = {
@@ -215,7 +229,8 @@ async function callGroq(
   systemPrompt: string,
   history: HistoryMessage[],
   userMessage: string,
-  tools: NeutralTool[] | undefined
+  tools: NeutralTool[] | undefined,
+  useReasoning: boolean
 ): Promise<ProviderResult> {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error("Missing GROQ_API_KEY in your .env file.");
@@ -229,7 +244,14 @@ async function callGroq(
     { role: "user", content: userMessage },
   ];
 
-  const body: Record<string, unknown> = { model, messages };
+  const body: Record<string, unknown> = {
+    model,
+    messages,
+    // GPT-OSS includes a reasoning trace by default. That's wasted tokens
+    // for simple lookups/actions, but genuinely useful for questions that
+    // need real multi-step thinking -- toggled per-message, not globally off.
+    include_reasoning: useReasoning,
+  };
   if (tools) {
     body.tools = tools.map((t) => ({
       type: "function",
@@ -368,12 +390,13 @@ export async function runAgent(
   const recentHistory = history.slice(-8);
   const tools = selectTools(userMessage);
   const systemPrompt = await buildSystemPrompt(userMessage);
+  const useReasoning = needsDeepReasoning(userMessage);
 
   const start = Date.now();
   const result =
     provider === "gemini"
       ? await callGemini(model, systemPrompt, recentHistory, userMessage, tools)
-      : await callGroq(model, systemPrompt, recentHistory, userMessage, tools);
+      : await callGroq(model, systemPrompt, recentHistory, userMessage, tools, useReasoning);
   const latencyMs = Date.now() - start;
 
   await logUsage({

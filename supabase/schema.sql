@@ -66,6 +66,11 @@ create index if not exists schedule_events_date_idx on schedule_events (event_da
 -- this table permanently, so it doubles as your schedule history.
 alter table schedule_events add column if not exists end_time time;
 alter table schedule_events add column if not exists done boolean not null default false;
+-- Separate from "done": Clear Schedule greys out/locks whatever is still
+-- undone for the day without marking it complete. Unclear Schedule reverses
+-- just that -- individually-ticked "done" events are never touched by
+-- either action.
+alter table schedule_events add column if not exists cleared boolean not null default false;
 
 -- Memories: durable facts CeeBee learns about Shina over time, injected
 -- into her instructions on every chat request. This is the "training"
@@ -138,13 +143,17 @@ create index if not exists chat_messages_conversation_idx on chat_messages (conv
 -- Single row, always id = 1.
 create table if not exists app_settings (
   id smallint primary key default 1,
-  model text not null default 'llama-3.1-8b-instant',
+  model text not null default 'openai/gpt-oss-120b',
   updated_at timestamptz not null default now(),
   constraint single_row check (id = 1)
 );
 alter table app_settings enable row level security;
-insert into app_settings (id, model) values (1, 'llama-3.1-8b-instant')
+insert into app_settings (id, model) values (1, 'openai/gpt-oss-120b')
   on conflict (id) do nothing;
+-- Migrates anyone who already had the now-unavailable llama-3.1-8b-instant
+-- or gemini-2.5-flash saved as their model.
+update app_settings set model = 'openai/gpt-oss-120b'
+  where model in ('llama-3.1-8b-instant', 'gemini-2.5-flash');
 
 -- Track rate-limit hits per provider, since Gemini and Groq have separate,
 -- very different quotas (Gemini free tier is far stricter).

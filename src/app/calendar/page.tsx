@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { toLocalDateKey } from "@/lib/dateUtils";
 
 type CalEvent = {
   id: string;
@@ -11,21 +12,19 @@ type CalEvent = {
   meetLink: string | null;
 };
 
-function toDateKey(d: Date) {
-  return d.toISOString().slice(0, 10);
-}
-
 export default function CalendarPage() {
   const [viewDate, setViewDate] = useState(new Date());
   const [events, setEvents] = useState<CalEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [selectedDay, setSelectedDay] = useState<string>(toDateKey(new Date()));
+  const [selectedDay, setSelectedDay] = useState<string>(toLocalDateKey(new Date()));
+  const [showForm, setShowForm] = useState(false);
+  const [editingEvent, setEditingEvent] = useState<CalEvent | null>(null);
 
   const year = viewDate.getFullYear();
   const month = viewDate.getMonth();
 
-  useEffect(() => {
+  function reload() {
     const start = new Date(year, month, 1);
     const end = new Date(year, month + 1, 1);
     setLoading(true);
@@ -39,28 +38,34 @@ export default function CalendarPage() {
         }
       })
       .finally(() => setLoading(false));
-  }, [year, month]);
+  }
+
+  useEffect(reload, [year, month]);
 
   const eventsByDay: Record<string, CalEvent[]> = {};
   for (const e of events) {
+    // e.start is an ISO datetime already in the event's own timezone
+    // offset (e.g. "...+01:00"), so slicing the date portion directly is
+    // correct here -- no UTC conversion trap like the grid cells have.
     const key = e.start.slice(0, 10);
     (eventsByDay[key] ??= []).push(e);
   }
 
   const firstOfMonth = new Date(year, month, 1);
   const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const startWeekday = firstOfMonth.getDay(); // 0 = Sunday
+  const startWeekday = firstOfMonth.getDay();
   const cells: (number | null)[] = [
     ...Array(startWeekday).fill(null),
     ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
   ];
 
-  const monthLabel = viewDate.toLocaleDateString("en-GB", {
-    month: "long",
-    year: "numeric",
-  });
-
+  const monthLabel = viewDate.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
   const selectedEvents = eventsByDay[selectedDay] ?? [];
+
+  async function deleteEvent(id: string) {
+    await fetch(`/api/calendar/${id}`, { method: "DELETE" });
+    reload();
+  }
 
   return (
     <div className="flex flex-col flex-1 min-h-0 w-full overflow-y-auto">
@@ -96,7 +101,7 @@ export default function CalendarPage() {
             onClick={() => {
               const today = new Date();
               setViewDate(today);
-              setSelectedDay(toDateKey(today));
+              setSelectedDay(toLocalDateKey(today));
             }}
             className="bg-amber-400 text-neutral-950 text-xs font-medium px-3 py-1.5 rounded-full"
           >
@@ -125,10 +130,10 @@ export default function CalendarPage() {
         <div className="grid grid-cols-7 gap-1">
           {cells.map((day, i) => {
             if (day === null) return <div key={i} />;
-            const dateKey = toDateKey(new Date(year, month, day));
+            const dateKey = toLocalDateKey(new Date(year, month, day));
             const hasEvents = eventsByDay[dateKey]?.length > 0;
             const isSelected = dateKey === selectedDay;
-            const isToday = dateKey === toDateKey(new Date());
+            const isToday = dateKey === toLocalDateKey(new Date());
 
             return (
               <button
@@ -152,52 +157,213 @@ export default function CalendarPage() {
         </div>
 
         <div>
-          <h3 className="text-xs uppercase text-neutral-500 font-medium px-1 mb-2">
-            {new Date(selectedDay).toLocaleDateString("en-GB", {
-              weekday: "long",
-              day: "numeric",
-              month: "long",
-            })}
-          </h3>
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="text-xs uppercase text-neutral-500 font-medium px-1">
+              {new Date(selectedDay).toLocaleDateString("en-GB", {
+                weekday: "long",
+                day: "numeric",
+                month: "long",
+              })}
+            </h3>
+            <button
+              onClick={() => {
+                setEditingEvent(null);
+                setShowForm(true);
+              }}
+              className="bg-amber-400 text-neutral-950 text-xs font-medium px-3 py-1.5 rounded-full"
+            >
+              + Add Event
+            </button>
+          </div>
           {loading ? (
-            <div className="text-neutral-500 text-sm text-center py-6">
-              Loading…
-            </div>
+            <div className="text-neutral-500 text-sm text-center py-6">Loading…</div>
           ) : error ? (
-            <div className="text-neutral-500 text-sm text-center py-6">
-              {error}
-            </div>
+            <div className="text-neutral-500 text-sm text-center py-6">{error}</div>
           ) : selectedEvents.length === 0 ? (
-            <div className="text-neutral-500 text-sm text-center py-6">
-              No events on this day.
-            </div>
+            <div className="text-neutral-500 text-sm text-center py-6">No events on this day.</div>
           ) : (
             <div className="space-y-2">
               {selectedEvents.map((e) => (
                 <div key={e.id} className="bg-neutral-900 rounded-xl px-4 py-3">
                   <div className="text-sm font-medium">{e.title}</div>
                   <div className="text-xs text-neutral-500 mt-1">
-                    {new Date(e.start).toLocaleTimeString("en-GB", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
+                    {new Date(e.start).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+                    {" - "}
+                    {new Date(e.end).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
                   </div>
-                  {e.meetLink && (
-                    <a
-                      href={e.meetLink}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-amber-400 text-xs underline mt-1 inline-block"
+                  <div className="flex gap-3 mt-2 text-xs">
+                    {e.meetLink && (
+                      <a
+                        href={e.meetLink}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-amber-400 underline"
+                      >
+                        Join meeting
+                      </a>
+                    )}
+                    <button
+                      onClick={() => {
+                        setEditingEvent(e);
+                        setShowForm(true);
+                      }}
+                      className="text-neutral-400 ml-auto"
                     >
-                      Join meeting
-                    </a>
-                  )}
+                      Edit
+                    </button>
+                    <button onClick={() => deleteEvent(e.id)} className="text-neutral-600">
+                      Delete
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
           )}
         </div>
       </main>
+
+      {showForm && (
+        <CalendarEventForm
+          defaultDate={selectedDay}
+          editingEvent={editingEvent}
+          onClose={() => setShowForm(false)}
+          onSaved={reload}
+        />
+      )}
+    </div>
+  );
+}
+
+function CalendarEventForm({
+  defaultDate,
+  editingEvent,
+  onClose,
+  onSaved,
+}: {
+  defaultDate: string;
+  editingEvent: CalEvent | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const editStart = editingEvent ? new Date(editingEvent.start) : null;
+  const editEnd = editingEvent ? new Date(editingEvent.end) : null;
+
+  const [title, setTitle] = useState(editingEvent?.title ?? "");
+  const [date, setDate] = useState(defaultDate);
+  const [startTime, setStartTime] = useState(
+    editStart ? editStart.toTimeString().slice(0, 5) : "09:00"
+  );
+  const [endTime, setEndTime] = useState(
+    editEnd ? editEnd.toTimeString().slice(0, 5) : "10:00"
+  );
+  const [createMeetLink, setCreateMeetLink] = useState(!!editingEvent?.meetLink);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!title.trim()) {
+      setError("Give the event a title.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+
+    const startISO = new Date(`${date}T${startTime}:00`).toISOString();
+    const endISO = new Date(`${date}T${endTime}:00`).toISOString();
+
+    try {
+      const res = editingEvent
+        ? await fetch(`/api/calendar/${editingEvent.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title, startTime: startISO, endTime: endISO }),
+          })
+        : await fetch("/api/calendar", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title, startTime: startISO, endTime: endISO, createMeetLink }),
+          });
+
+      if (!res.ok) {
+        const data = await res.json();
+        setError(data.error ?? "Something went wrong.");
+        setSaving(false);
+        return;
+      }
+
+      onSaved();
+      onClose();
+    } catch {
+      setError("Couldn't reach the server.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50">
+      <div className="bg-neutral-900 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-md p-5">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="font-semibold text-lg">{editingEvent ? "Edit Event" : "New Event"}</h2>
+          <button onClick={onClose} className="text-neutral-500 text-sm px-2 py-1">
+            Cancel
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Event title"
+            className="w-full bg-neutral-800 rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+            autoFocus
+          />
+
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            className="w-full bg-neutral-800 rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+          />
+
+          <div className="grid grid-cols-2 gap-3">
+            <input
+              type="time"
+              value={startTime}
+              onChange={(e) => setStartTime(e.target.value)}
+              className="w-full bg-neutral-800 rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+            />
+            <input
+              type="time"
+              value={endTime}
+              onChange={(e) => setEndTime(e.target.value)}
+              className="w-full bg-neutral-800 rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+            />
+          </div>
+
+          {!editingEvent && (
+            <label className="flex items-center gap-2 text-sm text-neutral-300">
+              <input
+                type="checkbox"
+                checked={createMeetLink}
+                onChange={(e) => setCreateMeetLink(e.target.checked)}
+                className="w-4 h-4 accent-amber-400"
+              />
+              Add Google Meet link
+            </label>
+          )}
+
+          {error && <p className="text-red-400 text-xs">{error}</p>}
+
+          <button
+            type="submit"
+            disabled={saving}
+            className="w-full bg-amber-400 text-neutral-950 rounded-full py-2.5 font-medium text-sm disabled:opacity-50"
+          >
+            {saving ? "Saving…" : editingEvent ? "Save Changes" : "Add Event"}
+          </button>
+        </form>
+      </div>
     </div>
   );
 }

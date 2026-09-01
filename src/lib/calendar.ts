@@ -79,6 +79,59 @@ export async function listEventsInRange(
   }));
 }
 
+// Fetches full details of one event -- description, attendees, meet link --
+// for the "view details" panel.
+export async function getCalendarEvent(refreshToken: string, eventId: string) {
+  const auth = getAuthenticatedClient(refreshToken);
+  const calendar = google.calendar({ version: "v3", auth });
+
+  const { data } = await calendar.events.get({ calendarId: "primary", eventId });
+
+  return {
+    id: data.id,
+    title: data.summary,
+    description: data.description ?? null,
+    start: data.start?.dateTime ?? data.start?.date,
+    end: data.end?.dateTime ?? data.end?.date,
+    meetLink: data.hangoutLink ?? null,
+    attendees: data.attendees?.map((a) => a.email) ?? [],
+  };
+}
+
+export async function updateCalendarEvent(
+  refreshToken: string,
+  eventId: string,
+  updates: {
+    title?: string;
+    description?: string;
+    startTime?: string;
+    endTime?: string;
+  }
+) {
+  const auth = getAuthenticatedClient(refreshToken);
+  const calendar = google.calendar({ version: "v3", auth });
+
+  const { data } = await calendar.events.patch({
+    calendarId: "primary",
+    eventId,
+    requestBody: {
+      summary: updates.title,
+      description: updates.description,
+      start: updates.startTime ? { dateTime: updates.startTime } : undefined,
+      end: updates.endTime ? { dateTime: updates.endTime } : undefined,
+    },
+  });
+
+  return { id: data.id, title: data.summary };
+}
+
+export async function deleteCalendarEvent(refreshToken: string, eventId: string) {
+  const auth = getAuthenticatedClient(refreshToken);
+  const calendar = google.calendar({ version: "v3", auth });
+  await calendar.events.delete({ calendarId: "primary", eventId });
+  return { success: true };
+}
+
 export async function listUpcomingEvents(
   refreshToken: string,
   hoursAhead: number = 24
