@@ -56,6 +56,10 @@ export default function ChatPage() {
   // partial transcripts can be shown without permanently losing anything
   // Shina had already typed.
   const baseTextRef = useRef("");
+  // CeeBee is a girl -- cache a female US English system voice once the
+  // browser has finished loading its voice list (it loads asynchronously,
+  // sometimes after a short delay, sometimes only once used).
+  const preferredVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -71,6 +75,38 @@ export default function ChatPage() {
 
   useEffect(() => {
     setVoiceMuted(localStorage.getItem(VOICE_MUTE_KEY) === "1");
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+
+    // Names commonly used by browsers/OSes for their US English female
+    // voice -- checked in priority order. Falls back to any en-US voice,
+    // then to the browser default, if none of these are installed.
+    const FEMALE_US_VOICE_NAMES = [
+      "Google US English", "Samantha", "Microsoft Zira", "Microsoft Aria",
+      "Microsoft Jenny", "Aria", "Jenny", "Zira", "Female",
+    ];
+
+    function pickVoice() {
+      const voices = window.speechSynthesis.getVoices();
+      if (voices.length === 0) return;
+
+      const usVoices = voices.filter((v) => v.lang === "en-US" || v.lang?.startsWith("en-US"));
+      const named = usVoices.find((v) =>
+        FEMALE_US_VOICE_NAMES.some((name) => v.name.toLowerCase().includes(name.toLowerCase()))
+      );
+
+      preferredVoiceRef.current = named ?? usVoices[0] ?? voices.find((v) => v.lang?.startsWith("en")) ?? null;
+    }
+
+    pickVoice();
+    // Chrome (and some others) only populate the voice list asynchronously
+    // on first load, firing this event once they're ready.
+    window.speechSynthesis.onvoiceschanged = pickVoice;
+    return () => {
+      window.speechSynthesis.onvoiceschanged = null;
+    };
   }, []);
 
   function toggleVoiceMute() {
@@ -91,6 +127,7 @@ export default function ChatPage() {
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = "en-US";
     utterance.rate = 1;
+    if (preferredVoiceRef.current) utterance.voice = preferredVoiceRef.current;
     window.speechSynthesis.speak(utterance);
   }
 
