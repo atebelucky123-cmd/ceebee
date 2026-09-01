@@ -7,17 +7,22 @@ import ChatSidebar from "../components/ChatSidebar";
 type Message = { role: "user" | "model"; text: string; time: string };
 
 // Web Speech API isn't in TypeScript's standard DOM types, so we declare
-// just the bits CeeBee's mic button needs.
+// just the bits CeeBee's mic button needs. interimResults now streams
+// partial transcripts as Shina talks (matching how Gemini's own voice
+// input behaves), instead of only firing once at the end.
+type SpeechRecognitionResultLike = { isFinal: boolean; [j: number]: { transcript: string } };
 type SpeechRecognitionLike = {
   lang: string;
   interimResults: boolean;
   continuous: boolean;
   start: () => void;
   stop: () => void;
-  onresult: ((event: { results: { [i: number]: { [j: number]: { transcript: string } } } }) => void) | null;
+  onresult: ((event: { results: { [i: number]: SpeechRecognitionResultLike }; resultIndex: number } & { length?: number } & Iterable<never>) => void) | null;
   onend: (() => void) | null;
   onerror: (() => void) | null;
 };
+
+const VOICE_MUTE_KEY = "ceebee-voice-muted";
 
 function nowISO() {
   return new Date().toISOString();
@@ -37,6 +42,7 @@ export default function ChatPage() {
   const [editText, setEditText] = useState("");
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [listening, setListening] = useState(false);
+  const [voiceMuted, setVoiceMuted] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Refs update synchronously (unlike state), which matters here: without
@@ -46,6 +52,10 @@ export default function ChatPage() {
   // the user's message and CeeBee's reply into different chat histories.
   const conversationIdRef = useRef<string | null>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  // What was in the input box before this recording started, so live
+  // partial transcripts can be shown without permanently losing anything
+  // Shina had already typed.
+  const baseTextRef = useRef("");
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -58,6 +68,31 @@ export default function ChatPage() {
     const maxHeight = 5 * 24;
     el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
   }, [input]);
+
+  useEffect(() => {
+    setVoiceMuted(localStorage.getItem(VOICE_MUTE_KEY) === "1");
+  }, []);
+
+  function toggleVoiceMute() {
+    setVoiceMuted((prev) => {
+      const next = !prev;
+      localStorage.setItem(VOICE_MUTE_KEY, next ? "1" : "0");
+      if (next) window.speechSynthesis?.cancel();
+      return next;
+    });
+  }
+
+  function speak(text: string) {
+    if (voiceMuted) return;
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    // Cut off mid-sentence if a new reply arrives before the last one
+    // finished, rather than queuing them up.
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "en-US";
+    utterance.rate = 1;
+    window.speechSynthesis.speak(utterance);
+  }
 
   async function ensureConversation(): Promise<string> {
     if (conversationIdRef.current) return conversationIdRef.current;
@@ -115,6 +150,7 @@ export default function ChatPage() {
 
     const replyMsg: Message = { role: "model", text: replyText, time: nowISO() };
     setMessages((prev) => [...prev, replyMsg]);
+    speak(replyText);
     await fetch(`/api/conversations/${convId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -142,12 +178,23 @@ export default function ChatPage() {
 
     const recognition = new SpeechRecognitionCtor();
     recognition.lang = "en-US";
-    recognition.interimResults = false;
-    recognition.continuous = false;
+    // Streams partial results as Shina talks, and keeps listening across
+    // pauses instead of stopping after the first phrase -- she can watch
+    // the transcript build up live and hit the mic again to stop whenever
+    // she's done, the same way Gemini's voice input behaves.
+    recognition.interimResults = true;
+    recognition.continuous = true;
+
+    baseTextRef.current = input;
 
     recognition.onresult = (event) => {
-      const transcript = event.results[0][0].transcript;
-      setInput((prev) => (prev ? `${prev} ${transcript}` : transcript));
+      const results = event.results as unknown as { [i: number]: SpeechRecognitionResultLike; length: number };
+      let combined = "";
+      for (let i = 0; i < results.length; i++) {
+        combined += results[i][0].transcript;
+      }
+      const base = baseTextRef.current;
+      setInput(base ? `${base} ${combined}` : combined);
     };
     recognition.onend = () => setListening(false);
     recognition.onerror = () => setListening(false);
@@ -160,6 +207,11 @@ export default function ChatPage() {
   async function sendMessage() {
     const text = input.trim();
     if (!text || loading) return;
+
+    if (listening) {
+      recognitionRef.current?.stop();
+      setListening(false);
+    }
 
     const userMsg: Message = { role: "user", text, time: nowISO() };
     const nextMessages = [...messages, userMsg];
@@ -232,7 +284,25 @@ export default function ChatPage() {
           </svg>
         </button>
         <Image src="/logo.svg" alt="CeeBee" width={32} height={32} className="rounded-full" />
-        <h1 className="font-semibold text-lg">CeeBee</h1>
+        <h1 className="font-semibold text-lg flex-1">CeeBee</h1>
+        <button
+          onClick={toggleVoiceMute}
+          className="text-neutral-400"
+          aria-label={voiceMuted ? "Unmute CeeBee's voice" : "Mute CeeBee's voice"}
+          title={voiceMuted ? "CeeBee's voice is off" : "CeeBee's voice is on"}
+        >
+          {voiceMuted ? (
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+              <path d="M11 5 6 9H3v6h3l5 4V5z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+              <path d="M17 9l6 6M23 9l-6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
+          ) : (
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+              <path d="M11 5 6 9H3v6h3l5 4V5z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+              <path d="M15.5 8.5a5 5 0 010 7M18.5 6a9 9 0 010 12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
+          )}
+        </button>
       </header>
 
       <ChatSidebar
@@ -305,13 +375,21 @@ export default function ChatPage() {
                     </button>
                   )}
                   {m.role === "model" && (
-                    <button
-                      onClick={() => regenerate(i)}
-                      disabled={loading}
-                      className="text-[10px] text-neutral-500 hover:text-amber-400 disabled:opacity-50"
-                    >
-                      Refresh
-                    </button>
+                    <>
+                      <button
+                        onClick={() => regenerate(i)}
+                        disabled={loading}
+                        className="text-[10px] text-neutral-500 hover:text-amber-400 disabled:opacity-50"
+                      >
+                        Refresh
+                      </button>
+                      <button
+                        onClick={() => speak(m.text)}
+                        className="text-[10px] text-neutral-500 hover:text-amber-400"
+                      >
+                        Play
+                      </button>
+                    </>
                   )}
                 </div>
               </>
@@ -331,9 +409,9 @@ export default function ChatPage() {
         <button
           onClick={toggleListening}
           className={`shrink-0 rounded-full p-2.5 ${
-            listening ? "bg-red-500 text-white" : "bg-neutral-900 text-neutral-400"
+            listening ? "bg-red-500 text-white animate-pulse" : "bg-neutral-900 text-neutral-400"
           }`}
-          aria-label="Voice input"
+          aria-label={listening ? "Stop recording" : "Voice input"}
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
             <rect x="9" y="2" width="6" height="12" rx="3" fill="currentColor" />
@@ -361,7 +439,7 @@ export default function ChatPage() {
             // behavior -- inserting a newline -- since Send is a
             // dedicated button there, not a keyboard shortcut.
           }}
-          placeholder="Ask CeeBee anything…"
+          placeholder={listening ? "Listening… tap the mic to stop" : "Ask CeeBee anything…"}
           rows={1}
           className="flex-1 bg-neutral-900 rounded-2xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-amber-400 resize-none overflow-y-auto leading-6"
         />

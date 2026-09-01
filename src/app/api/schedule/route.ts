@@ -1,23 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabaseServerClient } from "@/lib/supabase";
+import { createScheduleEvent, listScheduleEvents } from "@/lib/schedule";
+import type { Recurrence } from "@/lib/recurrence";
 
 export async function GET(req: NextRequest) {
-  const date = req.nextUrl.searchParams.get("date"); // YYYY-MM-DD
-  const sort = req.nextUrl.searchParams.get("sort") ?? "time"; // "time" | "priority"
+  const date = req.nextUrl.searchParams.get("date") ?? undefined; // YYYY-MM-DD
+  const sort = (req.nextUrl.searchParams.get("sort") as "time" | "priority") ?? "time";
 
-  const supabase = getSupabaseServerClient();
-  let query = supabase.from("schedule_events").select("*");
-
-  if (date) query = query.eq("event_date", date);
-
-  query =
-    sort === "priority"
-      ? query.order("priority", { ascending: true })
-      : query.order("start_time", { ascending: true, nullsFirst: false });
-
-  const { data, error } = await query;
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ events: data });
+  try {
+    const events = await listScheduleEvents(date, sort);
+    return NextResponse.json({ events });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Failed to load schedule" },
+      { status: 500 }
+    );
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -31,6 +28,8 @@ export async function POST(req: NextRequest) {
     meeting_link,
     priority,
     remind_before_minutes,
+    recurrence,
+    recurrence_days,
   } = body;
 
   if (!title || !event_date) {
@@ -40,22 +39,24 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const supabase = getSupabaseServerClient();
-  const { data, error } = await supabase
-    .from("schedule_events")
-    .insert({
+  try {
+    const { event, occurrences } = await createScheduleEvent({
       title,
-      description: description ?? null,
+      description,
       event_date,
-      start_time: start_time ?? null,
-      end_time: end_time ?? null,
-      meeting_link: meeting_link ?? null,
-      priority: priority ?? 3,
-      remind_before_minutes: remind_before_minutes ?? null,
-    })
-    .select()
-    .single();
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ event: data });
+      start_time,
+      end_time,
+      meeting_link,
+      priority,
+      remind_before_minutes,
+      recurrence: recurrence as Recurrence | undefined,
+      recurrence_days,
+    });
+    return NextResponse.json({ event, occurrences });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Failed to create event" },
+      { status: 400 }
+    );
+  }
 }

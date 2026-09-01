@@ -8,3 +8,19 @@ export function toLocalDateKey(date: Date): string {
   const local = new Date(date.getTime() - offset * 60000);
   return local.toISOString().slice(0, 10);
 }
+
+// Same idea, but for server code (CeeBee's agent) that needs "today" in
+// Shina's timezone specifically, regardless of what timezone the server
+// process itself runs in.
+export function todayLagosDateKey(): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Africa/Lagos",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const y = parts.find((p) => p.type === "year")?.value;
+  const m = parts.find((p) => p.type === "month")?.value;
+  const d = parts.find((p) => p.type === "day")?.value;
+  return `${y}-${m}-${d}`;
+}

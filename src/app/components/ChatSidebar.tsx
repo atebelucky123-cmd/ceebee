@@ -20,6 +20,8 @@ export default function ChatSidebar({
 }) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [search, setSearch] = useState("");
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameText, setRenameText] = useState("");
 
   useEffect(() => {
     if (open) {
@@ -32,6 +34,24 @@ export default function ChatSidebar({
   const filtered = conversations.filter((c) =>
     c.title.toLowerCase().includes(search.toLowerCase())
   );
+
+  function startRename(c: Conversation) {
+    setRenamingId(c.id);
+    setRenameText(c.title);
+  }
+
+  async function submitRename(id: string) {
+    const title = renameText.trim();
+    setRenamingId(null);
+    if (!title) return;
+
+    setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, title } : c)));
+    await fetch(`/api/conversations/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+  }
 
   if (!open) return null;
 
@@ -67,22 +87,62 @@ export default function ChatSidebar({
               No chats found.
             </p>
           ) : (
-            filtered.map((c) => (
-              <button
-                key={c.id}
-                onClick={() => {
-                  onSelect(c.id);
-                  onClose();
-                }}
-                className={`w-full text-left px-3 py-2 rounded-lg text-sm truncate ${
-                  c.id === activeId
-                    ? "bg-neutral-800 text-amber-400"
-                    : "text-neutral-300 hover:bg-neutral-800"
-                }`}
-              >
-                {c.title}
-              </button>
-            ))
+            filtered.map((c) =>
+              renamingId === c.id ? (
+                <div key={c.id} className="flex items-center gap-1 px-1 py-1">
+                  <input
+                    value={renameText}
+                    onChange={(e) => setRenameText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") submitRename(c.id);
+                      if (e.key === "Escape") setRenamingId(null);
+                    }}
+                    autoFocus
+                    className="flex-1 bg-neutral-800 rounded-lg px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+                  />
+                  <button
+                    onClick={() => submitRename(c.id)}
+                    className="text-amber-400 text-xs font-medium px-2 py-1.5"
+                  >
+                    Save
+                  </button>
+                </div>
+              ) : (
+                <div
+                  key={c.id}
+                  className={`group flex items-center rounded-lg ${
+                    c.id === activeId ? "bg-neutral-800" : "hover:bg-neutral-800"
+                  }`}
+                >
+                  <button
+                    onClick={() => {
+                      onSelect(c.id);
+                      onClose();
+                    }}
+                    className={`flex-1 text-left px-3 py-2 text-sm truncate ${
+                      c.id === activeId ? "text-amber-400" : "text-neutral-300"
+                    }`}
+                  >
+                    {c.title}
+                  </button>
+                  <button
+                    onClick={() => startRename(c)}
+                    aria-label="Rename chat"
+                    className="text-neutral-600 hover:text-amber-400 px-2 py-2 shrink-0"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                      <path
+                        d="M12 20h9M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4L16.5 3.5z"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </button>
+                </div>
+              )
+            )
           )}
         </div>
 

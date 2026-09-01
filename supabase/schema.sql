@@ -72,6 +72,25 @@ alter table schedule_events add column if not exists done boolean not null defau
 -- either action.
 alter table schedule_events add column if not exists cleared boolean not null default false;
 
+-- Recurrence: "everyday"/"weekdays"/"weekends"/"custom" schedule items.
+-- Recurring events are materialized as individual rows (one per matching
+-- date, generated up front) sharing a series_id, rather than expanding a
+-- rule at read time -- this keeps every existing "events on date X" query
+-- unchanged and makes deleting/editing a single occurrence trivial.
+alter table schedule_events add column if not exists recurrence text not null default 'none';
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'schedule_events_recurrence_check'
+  ) then
+    alter table schedule_events add constraint schedule_events_recurrence_check
+      check (recurrence in ('none','daily','weekdays','weekends','custom'));
+  end if;
+end $$;
+alter table schedule_events add column if not exists recurrence_days smallint[];
+alter table schedule_events add column if not exists series_id uuid;
+create index if not exists schedule_events_series_idx on schedule_events (series_id);
+
 -- Memories: durable facts CeeBee learns about Shina over time, injected
 -- into her instructions on every chat request. This is the "training"
 -- layer -- not model fine-tuning, just a growing personal context file.
@@ -158,5 +177,3 @@ update app_settings set model = 'openai/gpt-oss-120b'
 -- Track rate-limit hits per provider, since Gemini and Groq have separate,
 -- very different quotas (Gemini free tier is far stricter).
 alter table rate_limit_hits add column if not exists provider text default 'gemini';
-
-

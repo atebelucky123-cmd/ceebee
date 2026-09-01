@@ -1,11 +1,13 @@
 import { GoogleGenAI, Type, ThinkingLevel, type FunctionDeclaration } from "@google/genai";
 import { createCalendarEvent, listUpcomingEvents } from "@/lib/calendar";
+import { createScheduleEvent, listScheduleEvents } from "@/lib/schedule";
 import { listRecentEmails, sendEmail } from "@/lib/gmail";
 import { fetchWeather } from "@/lib/weather";
 import { getRelevantMemoryFacts, addMemoryFact } from "@/lib/memory";
 import { checkRateLimit } from "@/lib/rateLimit";
 import { logUsage } from "@/lib/usageLog";
 import { getCurrentModel, providerForModel } from "@/lib/settings";
+import { todayLagosDateKey } from "@/lib/dateUtils";
 
 // --- Neutral tool schema -------------------------------------------------
 // Defined once in plain JSON-schema shape (lowercase types), then adapted
@@ -26,7 +28,7 @@ const ALL_TOOLS: NeutralTool[] = [
   {
     name: "create_calendar_event",
     description:
-      "Creates a new event on the user's Google Calendar, optionally with a Google Meet link and attendees.",
+      "Creates a new event on Shina's Google Calendar, optionally with a Google Meet link and attendees. Only use this for actual calendar meetings/appointments -- when Shina explicitly says 'calendar', wants a Meet link, or wants to invite other people. For anything she just wants tracked on her personal day list (a priority, a reminder, a routine), use create_schedule_event instead.",
     parameters: {
       type: "object",
       properties: {
@@ -42,10 +44,47 @@ const ALL_TOOLS: NeutralTool[] = [
   },
   {
     name: "list_upcoming_events",
-    description: "Lists the user's calendar events between now and a number of hours ahead.",
+    description: "Lists events on Shina's actual Google Calendar between now and a number of hours ahead.",
     parameters: {
       type: "object",
       properties: { hoursAhead: { type: "number" } },
+    },
+  },
+  {
+    name: "create_schedule_event",
+    description:
+      "Adds an item to Shina's personal Schedule -- the day list on her dashboard, separate from Google Calendar. This is the default whenever she says 'schedule', 'add to my schedule', or gives a priority level or reminder, or describes something that repeats every day/weekday/weekend. If she lists several items in one message, call this tool once per item, in the same turn -- never stop after the first one, and carry over each item's own priority/time/reminder.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        description: { type: "string" },
+        event_date: { type: "string", description: "YYYY-MM-DD, the date of the first (or only) occurrence" },
+        start_time: { type: "string", description: "HH:MM, 24-hour, optional" },
+        end_time: { type: "string", description: "HH:MM, 24-hour, optional" },
+        priority: { type: "number", description: "1 (low) to 5 (high). Default 3 if she doesn't say." },
+        remind_before_minutes: { type: "number", description: "Minutes before start to remind her -- 5, 10, 30, or 60." },
+        meeting_link: { type: "string" },
+        recurrence: {
+          type: "string",
+          description:
+            "'none' (default) for a one-off item. 'daily' for 'every day'/'everyday'. 'weekdays' for weekdays/workdays. 'weekends' for weekends. 'custom' for specific days of the week (use recurrence_days).",
+        },
+        recurrence_days: {
+          type: "array",
+          items: { type: "number" },
+          description: "Only when recurrence is 'custom': 0=Sunday, 1=Monday, ... 6=Saturday.",
+        },
+      },
+      required: ["title", "event_date"],
+    },
+  },
+  {
+    name: "list_schedule_events",
+    description: "Lists items on Shina's personal Schedule (not Google Calendar) for a given date. Defaults to today if no date is given.",
+    parameters: {
+      type: "object",
+      properties: { date: { type: "string", description: "YYYY-MM-DD, defaults to today" } },
     },
   },
   {
@@ -90,10 +129,28 @@ const ALL_TOOLS: NeutralTool[] = [
 ];
 
 // --- Dynamic tool routing -------------------------------------------------
+// "event" and "add" are deliberately routed to BOTH calendar and schedule
+// tools -- that keyword alone doesn't say which one the user means, so the
+// model is left to decide using the calendar-vs-schedule rules in the
+// system prompt, with both tool families actually available to it.
 
 const ROUTES: { keywords: string[]; tools: string[] }[] = [
   { keywords: ["weather", "rain", "temperature", "forecast", "sunny", "cold", "hot"], tools: ["get_weather"] },
-  { keywords: ["calendar", "event", "meeting", "schedule", "meet link", "invite"], tools: ["create_calendar_event", "list_upcoming_events"] },
+  {
+    keywords: ["calendar", "meeting", "meet link", "google meet", "invite", "attendee"],
+    tools: ["create_calendar_event", "list_upcoming_events"],
+  },
+  {
+    keywords: [
+      "schedule", "priority", "remind me", "reminder", "routine", "every day", "everyday",
+      "each day", "weekdays", "weekdays only", "weekends", "recurring", "repeat", "repeats",
+    ],
+    tools: ["create_schedule_event", "list_schedule_events"],
+  },
+  {
+    keywords: ["event", "events", "add", "book"],
+    tools: ["create_calendar_event", "list_upcoming_events", "create_schedule_event", "list_schedule_events"],
+  },
   { keywords: ["email", "inbox", "gmail", "reply", "message from"], tools: ["list_recent_emails", "send_email"] },
   { keywords: ["remember", "don't forget", "keep in mind", "note that"], tools: ["remember_fact"] },
 ];
@@ -258,6 +315,10 @@ async function callGroq(
       function: { name: t.name, description: t.description, parameters: t.parameters },
     }));
     body.tool_choice = "auto";
+    // Lets the model return several tool calls in one response (e.g.
+    // several create_schedule_event calls for a multi-item request)
+    // instead of only ever emitting one and stopping.
+    body.parallel_tool_calls = true;
   }
 
   const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -303,6 +364,10 @@ async function executeTool(name: string, args: Record<string, unknown>, refreshT
       return createCalendarEvent(refreshToken, args as never);
     case "list_upcoming_events":
       return listUpcomingEvents(refreshToken, (args.hoursAhead as number) ?? 24);
+    case "create_schedule_event":
+      return createScheduleEvent(args as never);
+    case "list_schedule_events":
+      return listScheduleEvents((args.date as string | undefined) ?? todayLagosDateKey());
     case "list_recent_emails":
       return listRecentEmails(refreshToken, (args.maxResults as number) ?? 10);
     case "send_email":
@@ -331,7 +396,27 @@ function formatLocally(name: string, args: Record<string, unknown>, result: unkn
         const time = new Date(e.start).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" });
         return `- ${e.title} (${time})${e.meetLink ? " — has a Meet link" : ""}`;
       });
-      return `Here's what's coming up:\n${lines.join("\n")}`;
+      return `Here's what's coming up on your calendar:\n${lines.join("\n")}`;
+    }
+    case "create_schedule_event": {
+      const r = result as { occurrences: number };
+      const priority = (args.priority as number | undefined) ?? 3;
+      if (r.occurrences > 1) {
+        const label =
+          args.recurrence === "daily" ? "every day" :
+          args.recurrence === "weekdays" ? "on weekdays" :
+          args.recurrence === "weekends" ? "on weekends" : "on the days you picked";
+        return `Done — added "${args.title}" to your schedule, repeating ${label} (${r.occurrences} days, priority ${priority}).`;
+      }
+      return `Done — added "${args.title}" to your schedule (priority ${priority}).`;
+    }
+    case "list_schedule_events": {
+      const events = result as { title: string; start_time: string | null; priority: number }[];
+      if (events.length === 0) return "Nothing on your schedule for that day.";
+      const lines = events.map(
+        (e) => `- ${e.title}${e.start_time ? ` (${e.start_time.slice(0, 5)})` : ""} — priority ${e.priority}`
+      );
+      return `Here's your schedule:\n${lines.join("\n")}`;
     }
     case "list_recent_emails": {
       const emails = result as { from: string; subject: string; unread: boolean }[];
@@ -367,7 +452,17 @@ async function buildSystemPrompt(userMessage: string) {
     ? `\n\nRelevant things you know about Shina:\n${facts.map((f) => `- ${f}`).join("\n")}`
     : "";
 
-  return `You are CeeBee, Shina's personal assistant (she/her). Be direct and concise -- 1-3 sentences unless asked for more. Never call a tool unless the request genuinely needs external data or an action. When creating events, add a Meet link only if it sounds like a meeting/call.
+  return `You are CeeBee, Shina's personal assistant (she/her). Be direct and concise -- 1-3 sentences unless asked for more.
+
+You have two separate places things can go -- never mix them up:
+- Google Calendar (create_calendar_event / list_upcoming_events): real calendar meetings and appointments. Only use this when Shina explicitly says "calendar", wants a Google Meet link, or wants to invite other people.
+- Her Schedule (create_schedule_event / list_schedule_events): her personal day list on the dashboard, with priority levels and reminders. This is the default any time she says "schedule", gives something a priority, or just wants it tracked for the day -- even if she doesn't name it explicitly.
+
+If Shina lists multiple things to add in one message (numbered or not), call the matching create tool once per item, all in this same turn -- do not stop after the first one. Carry over each item's own priority, time, and reminder exactly as she stated them.
+
+If something repeats "every day"/"everyday", set recurrence to "daily" on create_schedule_event. "Weekdays" or "every weekday" -> "weekdays". "Weekends" -> "weekends". Specific days (e.g. "Mondays and Wednesdays") -> "custom" with recurrence_days (0=Sunday..6=Saturday). Otherwise leave recurrence as "none" -- recurrence only applies to the Schedule, never to Google Calendar events.
+
+Never call a tool unless the request genuinely needs external data or an action. When creating calendar events, add a Meet link only if it sounds like a meeting/call.
 
 Current date/time: ${formatted} (Africa/Lagos). Resolve all relative dates against this exact moment.${memorySection}`;
 }

@@ -229,9 +229,21 @@ export default function EmailsPage() {
                     {bodyLoading ? (
                       <p className="text-xs text-neutral-500">Loading full email…</p>
                     ) : (
-                      <p className="text-sm text-neutral-300 whitespace-pre-wrap">
-                        {fullBody}
-                      </p>
+                      <>
+                        <p className="text-sm text-neutral-300 whitespace-pre-wrap">
+                          {fullBody}
+                        </p>
+                        <a
+                          href={`https://mail.google.com/mail/?authuser=${encodeURIComponent(
+                            e.accountEmail
+                          )}#all/${e.threadId}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-amber-400 text-xs underline mt-2 inline-block"
+                        >
+                          Go to Gmail
+                        </a>
+                      </>
                     )}
                   </div>
                 )}

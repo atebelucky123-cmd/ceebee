@@ -24,6 +24,9 @@ type ScheduleEvent = {
   remind_before_minutes: number | null;
   done: boolean;
   cleared: boolean;
+  recurrence?: "none" | "daily" | "weekdays" | "weekends" | "custom";
+  recurrence_days?: number[] | null;
+  series_id?: string | null;
 };
 
 type TopView = "today" | "productivity";
@@ -454,8 +457,15 @@ function Schedule({
     onReload();
   }
 
-  async function deleteEvent(id: string) {
-    await fetch(`/api/schedule/${id}`, { method: "DELETE" });
+  async function deleteEvent(id: string, isRecurring: boolean) {
+    let scope = "";
+    if (isRecurring) {
+      const deleteFuture = confirm(
+        "This event repeats. OK to delete this and every future occurrence, or Cancel to delete just this one day."
+      );
+      scope = deleteFuture ? "?scope=series" : "";
+    }
+    await fetch(`/api/schedule/${id}${scope}`, { method: "DELETE" });
     onReload();
   }
 
@@ -562,6 +572,11 @@ function Schedule({
                 <span className={`font-medium text-sm ${e.done ? "line-through" : ""}`}>
                   {e.title}
                 </span>
+                {!!e.recurrence && e.recurrence !== "none" && (
+                  <span className="text-[10px] text-neutral-500 bg-neutral-800 rounded-full px-2 py-0.5 shrink-0">
+                    Repeats
+                  </span>
+                )}
               </label>
               <span className="text-xs text-amber-400 font-medium shrink-0">
                 P{e.priority}
@@ -591,7 +606,10 @@ function Schedule({
               <button onClick={() => onEdit(e)} className="text-neutral-400 ml-auto">
                 Edit
               </button>
-              <button onClick={() => deleteEvent(e.id)} className="text-neutral-600">
+              <button
+                onClick={() => deleteEvent(e.id, !!e.recurrence && e.recurrence !== "none")}
+                className="text-neutral-600"
+              >
                 Delete
               </button>
             </div>
