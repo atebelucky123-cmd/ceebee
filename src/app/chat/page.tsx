@@ -23,6 +23,10 @@ type SpeechRecognitionLike = {
 };
 
 const VOICE_MUTE_KEY = "ceebee-voice-muted";
+// Which conversation was open last, so switching Dashboard -> Chat (which
+// remounts this page fresh, since they're separate routes) restores it
+// instead of always landing on a blank chat.
+const ACTIVE_CONVERSATION_KEY = "ceebee-active-conversation";
 
 function nowISO() {
   return new Date().toISOString();
@@ -75,6 +79,19 @@ export default function ChatPage() {
 
   useEffect(() => {
     setVoiceMuted(localStorage.getItem(VOICE_MUTE_KEY) === "1");
+  }, []);
+
+  // Runs once on mount -- restores whatever conversation was open the last
+  // time this page was visited. If that conversation no longer exists
+  // (deleted, or the id is stale), silently fall back to a blank chat
+  // instead of showing an error.
+  useEffect(() => {
+    const savedId = localStorage.getItem(ACTIVE_CONVERSATION_KEY);
+    if (!savedId) return;
+    loadConversation(savedId).catch(() => {
+      localStorage.removeItem(ACTIVE_CONVERSATION_KEY);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -137,14 +154,17 @@ export default function ChatPage() {
     const data = await res.json();
     conversationIdRef.current = data.conversation.id;
     setConversationId(data.conversation.id);
+    localStorage.setItem(ACTIVE_CONVERSATION_KEY, data.conversation.id);
     return data.conversation.id;
   }
 
   async function loadConversation(id: string) {
+    const res = await fetch(`/api/conversations/${id}/messages`);
+    if (!res.ok) throw new Error("Conversation not found");
+    const data = await res.json();
     conversationIdRef.current = id;
     setConversationId(id);
-    const res = await fetch(`/api/conversations/${id}/messages`);
-    const data = await res.json();
+    localStorage.setItem(ACTIVE_CONVERSATION_KEY, id);
     setMessages(
       (data.messages ?? []).map((m: { role: string; content: string; created_at: string }) => ({
         role: m.role,
@@ -158,6 +178,7 @@ export default function ChatPage() {
     conversationIdRef.current = null;
     setConversationId(null);
     setMessages([]);
+    localStorage.removeItem(ACTIVE_CONVERSATION_KEY);
   }
 
   // Sends `historyBefore` + `text` to Gemini and appends the reply. Shared

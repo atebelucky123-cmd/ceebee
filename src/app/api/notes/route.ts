@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase";
+import { createNote } from "@/lib/notes";
 
 export async function GET() {
   const supabase = getSupabaseServerClient();
@@ -18,13 +19,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Note body is required" }, { status: 400 });
   }
 
-  const supabase = getSupabaseServerClient();
-  const { data, error } = await supabase
-    .from("notes")
-    .insert({ title: title ?? null, body })
-    .select()
-    .single();
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ note: data });
+  try {
+    const { note } = await createNote({ title, body });
+    return NextResponse.json({ note });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Failed to create note" },
+      { status: 500 }
+    );
+  }
 }

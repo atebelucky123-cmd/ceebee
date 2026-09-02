@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase";
+import { deleteScheduleEvent } from "@/lib/schedule";
 
 // Accepts either a partial update (e.g. just { done }) or a full edit
 // (title, description, date/time, priority, reminder, meeting link,
@@ -45,37 +46,21 @@ export async function PATCH(
 
 // DELETE /api/schedule/:id            -- deletes just this one occurrence.
 // DELETE /api/schedule/:id?scope=series -- deletes this occurrence and
-// every future occurrence in the same recurring series (past occurrences
-// are left alone, so history stays intact).
+// every future occurrence in the same recurring series.
 export async function DELETE(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const scope = req.nextUrl.searchParams.get("scope");
-  const supabase = getSupabaseServerClient();
+  const scope = req.nextUrl.searchParams.get("scope") === "series" ? "series" : "single";
 
-  if (scope === "series") {
-    const { data: row, error: lookupError } = await supabase
-      .from("schedule_events")
-      .select("series_id, event_date")
-      .eq("id", id)
-      .single();
-    if (lookupError) return NextResponse.json({ error: lookupError.message }, { status: 500 });
-
-    if (row?.series_id) {
-      const { error } = await supabase
-        .from("schedule_events")
-        .delete()
-        .eq("series_id", row.series_id)
-        .gte("event_date", row.event_date);
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-      return NextResponse.json({ success: true });
-    }
-    // Not actually part of a series -- fall through to a normal single delete.
+  try {
+    const result = await deleteScheduleEvent(id, scope);
+    return NextResponse.json(result);
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Failed to delete event" },
+      { status: 500 }
+    );
   }
-
-  const { error } = await supabase.from("schedule_events").delete().eq("id", id);
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ success: true });
 }

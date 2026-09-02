@@ -64,7 +64,18 @@ export async function fetchWeather(
     `&timezone=auto&forecast_days=7`;
 
   const res = await fetch(url);
+  if (!res.ok) {
+    // Open-Meteo returns a JSON error body (e.g. bad params, rate limit) on
+    // non-200s -- surfacing a clear error here means the API route returns
+    // a real "couldn't fetch weather" instead of crashing on an assumption
+    // about the response shape a few lines below.
+    throw new Error(`Weather service returned ${res.status}`);
+  }
+
   const data = await res.json();
+  if (!data?.current || !data?.hourly || !data?.daily) {
+    throw new Error("Weather service returned an unexpected response");
+  }
 
   const nowIndex = data.hourly.time.findIndex(
     (t: string) => new Date(t).getTime() >= Date.now()

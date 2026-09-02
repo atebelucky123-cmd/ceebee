@@ -68,3 +68,35 @@ export async function listScheduleEvents(date?: string, sort: "time" | "priority
   if (error) throw new Error(error.message);
   return data ?? [];
 }
+
+// Deletes one occurrence, or -- with scope "series" -- this occurrence and
+// every future occurrence sharing its series_id (past occurrences are left
+// alone, so history stays intact). Shared by DELETE /api/schedule/:id and
+// CeeBee's delete_schedule_event tool.
+export async function deleteScheduleEvent(id: string, scope: "single" | "series" = "single") {
+  const supabase = getSupabaseServerClient();
+
+  if (scope === "series") {
+    const { data: row, error: lookupError } = await supabase
+      .from("schedule_events")
+      .select("series_id, event_date")
+      .eq("id", id)
+      .single();
+    if (lookupError) throw new Error(lookupError.message);
+
+    if (row?.series_id) {
+      const { error } = await supabase
+        .from("schedule_events")
+        .delete()
+        .eq("series_id", row.series_id)
+        .gte("event_date", row.event_date);
+      if (error) throw new Error(error.message);
+      return { success: true, scope: "series" as const };
+    }
+    // Not actually part of a series -- fall through to a normal single delete.
+  }
+
+  const { error } = await supabase.from("schedule_events").delete().eq("id", id);
+  if (error) throw new Error(error.message);
+  return { success: true, scope: "single" as const };
+}
