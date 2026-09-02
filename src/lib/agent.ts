@@ -507,8 +507,13 @@ async function callGemini(
 
   // Mutable conversation transcript -- grows with each tool round so the
   // model sees its own prior calls and their real results before deciding
-  // whether it needs to do anything else.
-  const contents: Array<{ role: string; parts: unknown[] }> = [
+  // whether it needs to do anything else. Typed loosely (not against the
+  // SDK's exact Content/Part types) because we build these objects by
+  // hand across three different shapes (text, functionCall passthrough,
+  // functionResponse) and don't want a future SDK type-narrowing to break
+  // the build again over what is, at runtime, already the correct shape.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const contents: any[] = [
     ...history.map((m) => ({ role: m.role, parts: m.parts.map((p) => ({ text: p.text })) })),
     { role: "user", parts: [{ text: userMessage }] },
   ];
@@ -557,7 +562,7 @@ async function callGemini(
     // Preserve the model's actual turn (with its functionCall parts) so
     // the next round's request is a faithful continuation of this one.
     const modelContent = response.candidates?.[0]?.content;
-    if (modelContent) contents.push(modelContent as { role: string; parts: unknown[] });
+    if (modelContent) contents.push(modelContent);
 
     const functionResponseParts = [];
     for (const call of calls) {
