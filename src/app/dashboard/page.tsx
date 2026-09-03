@@ -40,6 +40,19 @@ function todayISO() {
   return local.toISOString().slice(0, 10);
 }
 
+// Native <input type="date"> fires onChange with an EMPTY STRING while
+// you're mid-edit (e.g. pressing Backspace to clear a segment before typing
+// a new one) -- not just once you've entered a full valid date. Passing that
+// straight into calRangeFor's `new Date(...).toISOString()` produced an
+// Invalid Date and threw an uncaught RangeError, crashing the whole page.
+// This guards selectedDate so it only ever updates on a genuinely complete
+// YYYY-MM-DD value; a mid-edit empty string is simply ignored, and the
+// previous valid date stays selected until a new complete one is entered.
+const FULL_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+function isCompleteDateString(value: string): boolean {
+  return FULL_DATE_RE.test(value) && !Number.isNaN(new Date(`${value}T00:00:00`).getTime());
+}
+
 export default function DashboardPage() {
   const [topView, setTopView] = useState<TopView>("today");
   const [todayTab, setTodayTab] = useState<TodayTab>("schedule");
@@ -66,8 +79,14 @@ export default function DashboardPage() {
   }, []);
 
   function calRangeFor(dateStr: string) {
-    const start = new Date(`${dateStr}T00:00:00`);
-    const end = new Date(`${dateStr}T23:59:59`);
+    // Defense-in-depth: even though selectedDate is now guarded at the
+    // source (see isCompleteDateString above), this never trusts its input
+    // blindly -- an invalid string here quietly falls back to today instead
+    // of throwing an uncaught RangeError on .toISOString() and crashing
+    // the whole page again.
+    const safeDate = isCompleteDateString(dateStr) ? dateStr : todayISO();
+    const start = new Date(`${safeDate}T00:00:00`);
+    const end = new Date(`${safeDate}T23:59:59`);
     return `start=${start.toISOString()}&end=${end.toISOString()}`;
   }
 
@@ -113,7 +132,7 @@ export default function DashboardPage() {
     tasks.length === 0 ? 0 : Math.round((doneTasks.length / tasks.length) * 100);
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 w-full overflow-y-auto">
+    <div className="flex flex-col flex-1 min-h-0 w-full">
       <header className="px-4 pt-4 pb-2 border-b border-neutral-800">
         <div className="flex bg-neutral-900 rounded-full p-1 text-sm">
           <button
@@ -139,7 +158,7 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      <main className="flex-1 px-4 py-4 space-y-4">
+      <main className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-4">
         <div className="flex gap-2 overflow-x-auto pb-1">
           {[
             { href: "/tasks", label: "Tasks" },
@@ -218,7 +237,9 @@ export default function DashboardPage() {
                   onSortChange={setSortBy}
                   onReload={reload}
                   selectedDate={selectedDate}
-                  onDateChange={setSelectedDate}
+                  onDateChange={(date) => {
+                    if (isCompleteDateString(date)) setSelectedDate(date);
+                  }}
                   onEdit={(e) => setEditingEvent(e)}
                 />
                 <button

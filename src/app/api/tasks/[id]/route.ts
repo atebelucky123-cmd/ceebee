@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabaseServerClient } from "@/lib/supabase";
+import { updateTask, deleteTask } from "@/lib/tasks";
 
 export async function PATCH(
   req: NextRequest,
@@ -8,25 +8,15 @@ export async function PATCH(
   const { id } = await params;
   const body = await req.json();
 
-  const update: Record<string, unknown> = {};
-  if ("done" in body) {
-    update.done = body.done;
-    update.completed_at = body.done ? new Date().toISOString() : null;
+  try {
+    const { task } = await updateTask(id, body);
+    return NextResponse.json({ task });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Failed to update task" },
+      { status: 500 }
+    );
   }
-  for (const key of ["title", "due_date", "start_time", "end_time"]) {
-    if (key in body) update[key] = body[key];
-  }
-
-  const supabase = getSupabaseServerClient();
-  const { data, error } = await supabase
-    .from("tasks")
-    .update(update)
-    .eq("id", id)
-    .select()
-    .single();
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ task: data });
 }
 
 export async function DELETE(
@@ -34,9 +24,13 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const supabase = getSupabaseServerClient();
-  const { error } = await supabase.from("tasks").delete().eq("id", id);
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ success: true });
+  try {
+    await deleteTask(id);
+    return NextResponse.json({ success: true });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Failed to delete task" },
+      { status: 500 }
+    );
+  }
 }

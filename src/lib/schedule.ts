@@ -69,6 +69,44 @@ export async function listScheduleEvents(date?: string, sort: "time" | "priority
   return data ?? [];
 }
 
+// Updates one existing schedule row -- only the fields actually passed are
+// touched, so a partial edit (e.g. just priority) never clobbers the rest
+// of the row with undefined/null. Shared by PATCH /api/schedule/:id and
+// CeeBee's update_schedule_event tool.
+export async function updateScheduleEvent(
+  id: string,
+  updates: Partial<Omit<CreateScheduleEventInput, "recurrence" | "recurrence_days">>
+) {
+  const update: Record<string, unknown> = {};
+  for (const key of [
+    "title",
+    "description",
+    "event_date",
+    "start_time",
+    "end_time",
+    "meeting_link",
+    "priority",
+    "remind_before_minutes",
+  ] as const) {
+    if (updates[key] !== undefined) update[key] = updates[key];
+  }
+
+  if (Object.keys(update).length === 0) {
+    throw new Error("Nothing to update.");
+  }
+
+  const supabase = getSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("schedule_events")
+    .update(update)
+    .eq("id", id)
+    .select()
+    .single();
+
+  if (error) throw new Error(error.message);
+  return { event: data };
+}
+
 // Deletes one occurrence, or -- with scope "series" -- this occurrence and
 // every future occurrence sharing its series_id (past occurrences are left
 // alone, so history stays intact). Shared by DELETE /api/schedule/:id and

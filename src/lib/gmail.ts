@@ -47,8 +47,37 @@ export async function listRecentEmails(
   return messages;
 }
 
-// Sends a plain-text email from the connected account.
-// Fetches and decodes the full plain-text body of a single message.
+// Strips an HTML email body down to readable plain text. Auto-generated
+// emails (account notifications, marketing sends) often bury their real
+// text/plain alternative under leftover Outlook conditional-comment
+// boilerplate (<!--[if !mso]>, <!--[if false]>, etc.) that Gmail's own web
+// client hides visually but which shows up as literal junk if you just
+// print the raw MIME part -- so this renders the HTML version instead,
+// which is what actually reflects what the email looks like.
+function htmlToPlainText(html: string): string {
+  return html
+    .replace(/<!--[\s\S]*?-->/g, "") // HTML/MSO conditional comments
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|tr|h[1-6])>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+// Fetches and decodes the full body of a single message. Prefers the
+// text/html part (converted to clean plain text) over text/plain, since
+// many auto-generated emails' plain-text alternative is itself poorly
+// generated and includes raw markup; falls back to text/plain only when
+// there's no HTML part at all.
 export async function getFullEmailBody(refreshToken: string, messageId: string) {
   const auth = getAuthenticatedClient(refreshToken);
   const gmail = google.gmail({ version: "v1", auth });
@@ -59,24 +88,30 @@ export async function getFullEmailBody(refreshToken: string, messageId: string) 
     format: "full",
   });
 
-  function extractText(part: {
+  type Part = {
     mimeType?: string | null;
     body?: { data?: string | null } | null;
     parts?: unknown[];
-  }): string {
-    if (part.mimeType === "text/plain" && part.body?.data) {
+  };
+
+  function extractByType(part: Part, mimeType: string): string {
+    if (part.mimeType === mimeType && part.body?.data) {
       return Buffer.from(part.body.data, "base64").toString("utf-8");
     }
     if (part.parts) {
-      for (const sub of part.parts as typeof part.parts) {
-        const text = extractText(sub as typeof part);
+      for (const sub of part.parts as Part[]) {
+        const text = extractByType(sub, mimeType);
         if (text) return text;
       }
     }
     return "";
   }
 
-  const body = data.payload ? extractText(data.payload) : "";
+  const payload = data.payload as Part | undefined;
+  const html = payload ? extractByType(payload, "text/html") : "";
+  const plain = payload ? extractByType(payload, "text/plain") : "";
+
+  const body = html ? htmlToPlainText(html) : plain;
   return { body: body || data.snippet || "(No content)" };
 }
 

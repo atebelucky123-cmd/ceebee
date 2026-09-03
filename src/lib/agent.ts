@@ -1,8 +1,18 @@
 import { GoogleGenAI, Type, ThinkingLevel, type FunctionDeclaration } from "@google/genai";
-import { createCalendarEvent, listUpcomingEvents, deleteCalendarEvent } from "@/lib/calendar";
-import { createScheduleEvent, listScheduleEvents, deleteScheduleEvent } from "@/lib/schedule";
-import { createTask } from "@/lib/tasks";
-import { createNote } from "@/lib/notes";
+import {
+  createCalendarEvent,
+  listUpcomingEvents,
+  deleteCalendarEvent,
+  updateCalendarEvent,
+} from "@/lib/calendar";
+import {
+  createScheduleEvent,
+  listScheduleEvents,
+  deleteScheduleEvent,
+  updateScheduleEvent,
+} from "@/lib/schedule";
+import { createTask, listTasks, updateTask, deleteTask } from "@/lib/tasks";
+import { createNote, listNotes, updateNote, deleteNote } from "@/lib/notes";
 import { listRecentEmails, sendEmail } from "@/lib/gmail";
 import { fetchWeather } from "@/lib/weather";
 import { getRelevantMemoryFacts, addMemoryFact } from "@/lib/memory";
@@ -84,6 +94,21 @@ const RAW_TOOLS: NeutralTool[] = [
     },
   },
   {
+    name: "update_calendar_event",
+    description: "Edits an existing Google Calendar event's title, description, or time. Requires its id -- if you don't already have it, call list_upcoming_events first to find the matching event by title/time. Only pass the fields that are actually changing.",
+    parameters: {
+      type: "object",
+      properties: {
+        eventId: { type: "string" },
+        title: { type: "string" },
+        description: { type: "string" },
+        startTime: { type: "string", description: "ISO 8601 datetime" },
+        endTime: { type: "string", description: "ISO 8601 datetime" },
+      },
+      required: ["eventId"],
+    },
+  },
+  {
     name: "create_schedule_event",
     description:
       "Adds an item to Shina's personal Schedule -- the day list on her dashboard, separate from Google Calendar. This is the default whenever she says 'schedule', gives something a priority level or reminder, or describes something that repeats every day/weekday/weekend. If she lists several items in one message, call this tool once per item, in the same turn -- carry over each item's own priority/time/reminder exactly as she stated them.",
@@ -96,7 +121,11 @@ const RAW_TOOLS: NeutralTool[] = [
         start_time: { type: "string", description: "HH:MM, 24-hour, optional" },
         end_time: { type: "string", description: "HH:MM, 24-hour, optional" },
         priority: { type: "number", description: "1 (low) to 5 (high). Default 3 if she doesn't say." },
-        remind_before_minutes: { type: "number", description: "Minutes before start to remind her -- 5, 10, 30, or 60." },
+        remind_before_minutes: {
+          type: "number",
+          description:
+            "Minutes before start to notify her -- 5, 10, 30, or 60. If she used the word 'reminder' but didn't say how far in advance, set this to 0 (notify right at the start time) rather than leaving it out -- omitting it entirely means no notification ever fires.",
+        },
         meeting_link: { type: "string" },
         recurrence: {
           type: "string",
@@ -136,6 +165,25 @@ const RAW_TOOLS: NeutralTool[] = [
     },
   },
   {
+    name: "update_schedule_event",
+    description: "Edits one existing item on Shina's Schedule -- title, date, time, priority, reminder, or meeting link. Requires its id -- if you don't already have it from earlier in this conversation, call list_schedule_events first to find the matching item by title/date. Only pass the fields that are actually changing.",
+    parameters: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        title: { type: "string" },
+        description: { type: "string" },
+        event_date: { type: "string", description: "YYYY-MM-DD" },
+        start_time: { type: "string", description: "HH:MM, 24-hour" },
+        end_time: { type: "string", description: "HH:MM, 24-hour" },
+        priority: { type: "number", description: "1 (low) to 5 (high)." },
+        remind_before_minutes: { type: "number", description: "0 = right at start time." },
+        meeting_link: { type: "string" },
+      },
+      required: ["id"],
+    },
+  },
+  {
     name: "create_task",
     description:
       "Adds a plain checkbox to-do to Shina's Tasks list -- distinct from her Schedule (no priority) and Calendar (no meeting time). Use this when she says 'task' or 'to-do', or just wants something to check off. Pass her wording through exactly as she said it -- do not paraphrase, correct, or reword it.",
@@ -151,6 +199,36 @@ const RAW_TOOLS: NeutralTool[] = [
     },
   },
   {
+    name: "list_tasks",
+    description: "Lists everything on Shina's Tasks list, including each task's id and done status. Call this before update_task or delete_task if you don't already know the task's id.",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    name: "update_task",
+    description: "Edits or completes an existing task. Requires its id -- if you don't already have it from earlier in this conversation, call list_tasks first to find the matching one by title. Only pass the fields that are actually changing.",
+    parameters: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        title: { type: "string" },
+        due_date: { type: "string", description: "YYYY-MM-DD" },
+        start_time: { type: "string", description: "HH:MM" },
+        end_time: { type: "string", description: "HH:MM" },
+        done: { type: "boolean" },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "delete_task",
+    description: "Deletes a task. Requires its id -- if you don't already have it, call list_tasks first to find the matching one by title.",
+    parameters: {
+      type: "object",
+      properties: { id: { type: "string" } },
+      required: ["id"],
+    },
+  },
+  {
     name: "create_note",
     description:
       "Saves a freeform note for Shina -- something she wants written down verbatim, not an action item. Pass her wording through exactly as she said or typed it, typos and all -- never paraphrase, correct, or substitute her own content with different wording.",
@@ -161,6 +239,33 @@ const RAW_TOOLS: NeutralTool[] = [
         body: { type: "string" },
       },
       required: ["body"],
+    },
+  },
+  {
+    name: "list_notes",
+    description: "Lists Shina's saved notes, including each note's id. Call this before update_note or delete_note if you don't already know the note's id.",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    name: "update_note",
+    description: "Edits an existing note's title or body. Requires its id -- if you don't already have it, call list_notes first to find the matching one. Pass her new wording through exactly as she said or typed it.",
+    parameters: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        title: { type: "string" },
+        body: { type: "string" },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "delete_note",
+    description: "Deletes a note. Requires its id -- if you don't already have it, call list_notes first to find the matching one.",
+    parameters: {
+      type: "object",
+      properties: { id: { type: "string" } },
+      required: ["id"],
     },
   },
   {
@@ -224,20 +329,46 @@ const ROUTES: { keywords: string[]; tools: string[] }[] = [
   { keywords: ["weather", "rain", "temperature", "forecast", "sunny", "cold", "hot"], tools: ["get_weather"] },
   {
     keywords: ["calendar", "meeting", "meet link", "google meet", "invite", "attendee"],
-    tools: ["create_calendar_event", "list_upcoming_events", "delete_calendar_event"],
+    tools: ["create_calendar_event", "list_upcoming_events", "delete_calendar_event", "update_calendar_event"],
   },
   {
     keywords: [
       "schedule", "priority", "remind me", "reminder", "routine", "every day", "everyday",
       "each day", "weekdays", "weekends", "recurring", "repeat", "repeats",
     ],
-    tools: ["create_schedule_event", "list_schedule_events", "delete_schedule_event"],
+    tools: ["create_schedule_event", "list_schedule_events", "delete_schedule_event", "update_schedule_event"],
   },
-  { keywords: ["task", "to-do", "todo", "checklist"], tools: ["create_task"] },
-  { keywords: ["note", "jot down", "write down", "write this down"], tools: ["create_note"] },
+  {
+    keywords: ["task", "to-do", "todo", "checklist"],
+    tools: ["create_task", "list_tasks", "update_task", "delete_task"],
+  },
+  {
+    keywords: ["note", "jot down", "write down", "write this down"],
+    tools: ["create_note", "list_notes", "update_note", "delete_note"],
+  },
   {
     keywords: ["delete", "remove", "cancel that", "get rid of", "clear"],
-    tools: ["delete_schedule_event", "delete_calendar_event", "list_schedule_events", "list_upcoming_events"],
+    tools: [
+      "delete_schedule_event", "delete_calendar_event", "delete_task", "delete_note",
+      "list_schedule_events", "list_upcoming_events", "list_tasks", "list_notes",
+    ],
+  },
+  {
+    keywords: ["edit", "change", "update", "rename", "modify", "reschedule"],
+    tools: [
+      "update_schedule_event", "list_schedule_events",
+      "update_calendar_event", "list_upcoming_events",
+      "update_task", "list_tasks",
+      "update_note", "list_notes",
+    ],
+  },
+  {
+    // "tomorrow"/"next week" etc are ambiguous across Schedule, Calendar,
+    // and Weather -- surface lookups for all three and let the model (with
+    // the system prompt's date-resolution rule) pick what's actually being
+    // asked about.
+    keywords: ["tomorrow", "next week", "this week", "what's on", "what do i have", "my day", "coming up"],
+    tools: ["list_schedule_events", "list_upcoming_events", "get_weather"],
   },
   {
     keywords: ["event", "events", "add", "book"],
@@ -282,7 +413,12 @@ function needsDeepReasoning(message: string): boolean {
 // callers wrap this so a failed tool shows up as an honest error in the
 // executed-calls list rather than crashing the whole request.
 
-async function executeTool(name: string, args: Record<string, unknown>, refreshToken: string) {
+async function executeTool(
+  name: string,
+  args: Record<string, unknown>,
+  refreshToken: string,
+  location: { lat: number; lon: number } | null
+) {
   switch (name) {
     case "create_calendar_event":
       return createCalendarEvent(refreshToken, args as never);
@@ -290,6 +426,8 @@ async function executeTool(name: string, args: Record<string, unknown>, refreshT
       return listUpcomingEvents(refreshToken, (args.hoursAhead as number) ?? 24);
     case "delete_calendar_event":
       return deleteCalendarEvent(refreshToken, args.eventId as string);
+    case "update_calendar_event":
+      return updateCalendarEvent(refreshToken, args.eventId as string, args as never);
     case "create_schedule_event":
       return createScheduleEvent(args as never);
     case "list_schedule_events":
@@ -299,22 +437,52 @@ async function executeTool(name: string, args: Record<string, unknown>, refreshT
         args.id as string,
         (args.scope as "single" | "series" | undefined) ?? "single"
       );
+    case "update_schedule_event":
+      return updateScheduleEvent(args.id as string, args as never);
     case "create_task":
       return createTask(args as never);
+    case "list_tasks":
+      return listTasks();
+    case "update_task":
+      return updateTask(args.id as string, args as never);
+    case "delete_task":
+      return deleteTask(args.id as string);
     case "create_note":
       return createNote(args as never);
+    case "list_notes":
+      return listNotes();
+    case "update_note":
+      return updateNote(args.id as string, args as never);
+    case "delete_note":
+      return deleteNote(args.id as string);
     case "list_recent_emails":
       return listRecentEmails(refreshToken, (args.maxResults as number) ?? 10);
     case "send_email":
       return sendEmail(refreshToken, args.to as string, args.subject as string, args.body as string);
     case "get_weather":
-      return fetchWeather();
+      // Falls back to the DEFAULT_LAT/DEFAULT_LON (Lagos) constant only
+      // when the browser didn't supply real coordinates -- previously this
+      // always used the default, so chat's weather answers could silently
+      // disagree with the Weather page (which uses real geolocation) for
+      // anyone not physically in that exact default spot.
+      return location ? fetchWeather(location.lat, location.lon) : fetchWeather();
     case "remember_fact":
       await addMemoryFact(args.fact as string, (args.category as string | undefined) ?? "general");
       return { saved: true };
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
+}
+
+// A remind_before_minutes value of 0 is a real, intentional setting ("notify
+// right at start time") -- so this checks for null/undefined specifically,
+// never falsy, or a genuine 0 would silently print nothing.
+function remindPhrase(remindBeforeMinutes: unknown): string {
+  if (remindBeforeMinutes === null || remindBeforeMinutes === undefined) return "";
+  const mins = remindBeforeMinutes as number;
+  return mins === 0
+    ? " I'll remind you right when it starts."
+    : ` I'll remind you ${mins} minutes before.`;
 }
 
 // Turns one executed tool call's result into the sentence(s) shown to
@@ -339,24 +507,32 @@ function formatLocally(name: string, args: Record<string, unknown>, result: unkn
     }
     case "delete_calendar_event":
       return "Done — removed that from your calendar.";
+    case "update_calendar_event": {
+      const r = result as { title: string | null };
+      return `Done — updated "${r.title ?? args.title ?? "that event"}" on your calendar.`;
+    }
     case "create_schedule_event": {
       const r = result as { occurrences: number };
       const priority = (args.priority as number | undefined) ?? 3;
       const time = args.start_time ? ` at ${args.start_time}` : "";
+      const remind = remindPhrase(args.remind_before_minutes);
       if (r.occurrences > 1) {
         const label =
           args.recurrence === "daily" ? "every day" :
           args.recurrence === "weekdays" ? "on weekdays" :
           args.recurrence === "weekends" ? "on weekends" : "on the days you picked";
-        return `Done — added "${args.title}"${time} to your schedule, repeating ${label} (${r.occurrences} days, priority ${priority}).`;
+        return `Done — added "${args.title}"${time} to your schedule, repeating ${label} (${r.occurrences} days, priority ${priority}).${remind}`;
       }
-      return `Done — added "${args.title}"${time} to your schedule (priority ${priority}).`;
+      return `Done — added "${args.title}"${time} to your schedule (priority ${priority}).${remind}`;
     }
     case "list_schedule_events": {
-      const events = result as { id: string; title: string; start_time: string | null; priority: number }[];
+      const events = result as { id: string; title: string; start_time: string | null; priority: number; remind_before_minutes: number | null }[];
       if (events.length === 0) return "Nothing on your schedule for that day.";
       const lines = events.map(
-        (e) => `- ${e.title}${e.start_time ? ` (${e.start_time.slice(0, 5)})` : ""} — priority ${e.priority}`
+        (e) =>
+          `- ${e.title}${e.start_time ? ` (${e.start_time.slice(0, 5)})` : ""} — priority ${e.priority}${
+            e.remind_before_minutes != null ? " ⏰" : ""
+          }`
       );
       return `Here's your schedule:\n${lines.join("\n")}`;
     }
@@ -366,10 +542,44 @@ function formatLocally(name: string, args: Record<string, unknown>, result: unkn
         ? "Done — removed that and every future occurrence from your schedule."
         : "Done — removed that from your schedule.";
     }
+    case "update_schedule_event": {
+      const r = result as { event: { title: string; priority: number; start_time: string | null; remind_before_minutes: number | null } };
+      const bits: string[] = [];
+      if (args.priority !== undefined) bits.push(`priority now ${r.event.priority}`);
+      if (args.start_time !== undefined) bits.push(`time now ${r.event.start_time?.slice(0, 5)}`);
+      if (args.event_date !== undefined) bits.push(`date now ${args.event_date}`);
+      const remind = remindPhrase(args.remind_before_minutes);
+      const detail = bits.length > 0 ? ` (${bits.join(", ")})` : "";
+      return `Done — updated "${r.event.title}"${detail}.${remind}`;
+    }
     case "create_task":
       return `Done — added "${args.title}" to your tasks.`;
+    case "list_tasks": {
+      const tasks = result as { id: string; title: string; done: boolean }[];
+      if (tasks.length === 0) return "Your task list is empty.";
+      const lines = tasks.map((t) => `- ${t.done ? "✓ " : ""}${t.title}`);
+      return `Here's your tasks:\n${lines.join("\n")}`;
+    }
+    case "update_task": {
+      const r = result as { task: { title: string; done: boolean } };
+      if (args.done === true) return `Done — marked "${r.task.title}" complete.`;
+      if (args.done === false) return `Done — marked "${r.task.title}" not done.`;
+      return `Done — updated "${r.task.title}".`;
+    }
+    case "delete_task":
+      return "Done — removed that task.";
     case "create_note":
       return "Done — saved that note.";
+    case "list_notes": {
+      const notes = result as { id: string; title: string | null; body: string }[];
+      if (notes.length === 0) return "You don't have any notes saved.";
+      const lines = notes.map((n) => `- ${n.title ? `${n.title}: ` : ""}${n.body.slice(0, 60)}`);
+      return `Here's your notes:\n${lines.join("\n")}`;
+    }
+    case "update_note":
+      return "Done — updated that note.";
+    case "delete_note":
+      return "Done — deleted that note.";
     case "list_recent_emails": {
       const emails = result as { from: string; subject: string; unread: boolean }[];
       const unread = emails.filter((e) => e.unread).length;
@@ -442,7 +652,8 @@ async function runToolOnce(
   call: { name: string; args: Record<string, unknown> },
   refreshToken: string,
   seenSignatures: Set<string>,
-  executed: ExecutedCall[]
+  executed: ExecutedCall[],
+  location: { lat: number; lon: number } | null
 ): Promise<unknown> {
   const signature = `${call.name}:${JSON.stringify(call.args)}`;
   let result: unknown;
@@ -451,7 +662,7 @@ async function runToolOnce(
   } else {
     seenSignatures.add(signature);
     try {
-      result = await executeTool(call.name, call.args, refreshToken);
+      result = await executeTool(call.name, call.args, refreshToken, location);
     } catch (err) {
       result = { error: err instanceof Error ? err.message : "Unknown error" };
     }
@@ -498,7 +709,8 @@ async function callGemini(
   history: HistoryMessage[],
   userMessage: string,
   tools: NeutralTool[] | undefined,
-  refreshToken: string
+  refreshToken: string,
+  location: { lat: number; lon: number } | null
 ): Promise<ProviderResult> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("Missing GEMINI_API_KEY in your .env file.");
@@ -566,7 +778,7 @@ async function callGemini(
 
     const functionResponseParts = [];
     for (const call of calls) {
-      const result = await runToolOnce(call, refreshToken, seenSignatures, executed);
+      const result = await runToolOnce(call, refreshToken, seenSignatures, executed, location);
       functionResponseParts.push({ functionResponse: { name: call.name, response: { result } } });
     }
     contents.push({ role: "user", parts: functionResponseParts });
@@ -582,7 +794,8 @@ async function callGroq(
   userMessage: string,
   tools: NeutralTool[] | undefined,
   useReasoning: boolean,
-  refreshToken: string
+  refreshToken: string,
+  location: { lat: number; lon: number } | null
 ): Promise<ProviderResult> {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error("Missing GROQ_API_KEY in your .env file.");
@@ -681,7 +894,7 @@ async function callGroq(
 
     for (const tc of rawToolCalls) {
       const call = { name: tc.function.name, args: JSON.parse(tc.function.arguments || "{}") };
-      const result = await runToolOnce(call, refreshToken, seenSignatures, executed);
+      const result = await runToolOnce(call, refreshToken, seenSignatures, executed, location);
       messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(result) });
     }
   }
@@ -705,21 +918,25 @@ async function buildSystemPrompt(userMessage: string) {
 
   return `You are CeeBee, Shina's personal assistant (she/her). Be direct and concise -- 1-3 sentences unless asked for more.
 
-You have four separate places things can go -- never mix them up:
-- Google Calendar (create_calendar_event / list_upcoming_events / delete_calendar_event): real calendar meetings and appointments. Only use this when Shina explicitly says "calendar", wants a Google Meet link, or wants to invite other people.
-- Her Schedule (create_schedule_event / list_schedule_events / delete_schedule_event): her personal day list, with priority levels and reminders. This is the default any time she says "schedule", gives something a priority, or wants it tracked for the day.
-- Her Tasks (create_task): a plain checkbox to-do with no priority and no specific time requirement. Use this when she says "task" or "to-do".
-- Her Notes (create_note): freeform text she wants saved verbatim, not an action item.
+You have four separate places things can go -- never mix them up. Each one now has full create/list/edit/delete tools:
+- Google Calendar (create_calendar_event / list_upcoming_events / update_calendar_event / delete_calendar_event): real calendar meetings and appointments. Only use this when Shina explicitly says "calendar", wants a Google Meet link, or wants to invite other people.
+- Her Schedule (create_schedule_event / list_schedule_events / update_schedule_event / delete_schedule_event): her personal day list, with priority levels and reminders. This is the default any time she says "schedule", gives something a priority, or wants it tracked for the day.
+- Her Tasks (create_task / list_tasks / update_task / delete_task): a plain checkbox to-do with no priority and no specific time requirement. Use this when she says "task" or "to-do".
+- Her Notes (create_note / list_notes / update_note / delete_note): freeform text she wants saved verbatim, not an action item.
 
 If Shina lists multiple things to add in one message (numbered or not), call the matching create tool once per item, all in this same turn -- do not stop after the first one. Carry over each item's own priority, time, and reminder exactly as she stated them.
 
 If something repeats "every day"/"everyday", set recurrence to "daily" on create_schedule_event. "Weekdays" or "every weekday" -> "weekdays". "Weekends" -> "weekends". Specific days (e.g. "Mondays and Wednesdays") -> "custom" with recurrence_days (0=Sunday..6=Saturday). Recurrence only applies to the Schedule, never to Google Calendar or Tasks.
 
-To delete or remove something, you need its id first. If you don't already have it from earlier in this conversation, call the matching list tool first (list_schedule_events or list_upcoming_events), find the item that matches what Shina described, then call the delete tool with its id. Never tell her something was deleted, added, or changed unless a tool actually returned a real result confirming it -- if you're not certain, say so plainly instead of guessing.
+To delete, remove, or edit/change something, you need its id first. If you don't already have it from earlier in this conversation, call the matching list tool first (list_schedule_events, list_upcoming_events, list_tasks, or list_notes), find the item that matches what Shina described, then call the delete or update tool with its id. Every destination has both an edit and a delete tool now -- Calendar, Schedule, Tasks, and Notes -- so never tell her something can't be edited or deleted; look its id up and do it. When editing, only pass the fields that are actually changing. Never tell her something was deleted, added, or changed unless a tool actually returned a real result confirming it -- if you're not certain, say so plainly instead of guessing.
+
+If Shina asks for a "reminder" specifically (not just a plain schedule item), you must set remind_before_minutes on create_schedule_event or update_schedule_event -- default it to 0 (notify right when it starts) if she doesn't say how far in advance. A schedule item with remind_before_minutes left unset produces no notification at all, so never skip it when she used the word "reminder" or "remind me".
 
 When saving a note or a task, pass Shina's own wording through exactly as she said or typed it -- do not fix, rephrase, or substitute her words with different terms, even if they contain typos or seem unusual. If something is genuinely ambiguous, ask rather than guessing at what she meant.
 
 Never call a tool unless the request genuinely needs external data or an action. When creating calendar events, add a Meet link only if it sounds like a meeting/call. For weather, use the "day" parameter to match what Shina actually asked for (0 = today, 1 = tomorrow, etc.) rather than always answering with today's conditions.
+
+When Shina asks what's on her schedule or calendar for a day other than today ("tomorrow", "next Tuesday", "next week", a specific date), work out the actual YYYY-MM-DD date against the current date/time below and pass it as the date parameter to list_schedule_events -- don't default to today just because she didn't spell out a full date.
 
 Current date/time: ${formatted} (Africa/Lagos). Resolve all relative dates against this exact moment.${memorySection}`;
 }
@@ -729,7 +946,8 @@ Current date/time: ${formatted} (Africa/Lagos). Resolve all relative dates again
 export async function runAgent(
   userMessage: string,
   refreshToken: string,
-  history: HistoryMessage[] = []
+  history: HistoryMessage[] = [],
+  location: { lat: number; lon: number } | null = null
 ) {
   const model = await getCurrentModel();
   const provider = providerForModel(model);
@@ -747,8 +965,8 @@ export async function runAgent(
   const start = Date.now();
   const result =
     provider === "gemini"
-      ? await callGemini(model, systemPrompt, recentHistory, userMessage, tools, refreshToken)
-      : await callGroq(model, systemPrompt, recentHistory, userMessage, tools, useReasoning, refreshToken);
+      ? await callGemini(model, systemPrompt, recentHistory, userMessage, tools, refreshToken, location)
+      : await callGroq(model, systemPrompt, recentHistory, userMessage, tools, useReasoning, refreshToken, location);
   const latencyMs = Date.now() - start;
 
   await logUsage({
@@ -783,4 +1001,55 @@ export async function runAgent(
   }
 
   return summaries.length > 0 ? summaries.join("\n\n") : "Done.";
+}
+
+// --- Conversation titling -------------------------------------------------
+// Generates a short (3-6 word) summary title from the first exchange, the
+// same way Gemini/ChatGPT rename a chat after your first message instead of
+// just truncating it. Runs once, after the first reply, and is best-effort:
+// if it fails (rate limit, etc.) the caller just keeps whatever title it
+// already set (the old truncated-message fallback), so a failure here never
+// breaks the conversation itself.
+export async function generateConversationTitle(userMessage: string, reply: string): Promise<string | null> {
+  const model = await getCurrentModel();
+  const provider = providerForModel(model);
+  const prompt = `Summarize this exchange as a short chat title, 3-6 words, no quotes, no trailing punctuation, no emoji.\n\nUser: ${userMessage}\nAssistant: ${reply}\n\nTitle:`;
+
+  try {
+    if (provider === "gemini") {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) return null;
+      const ai = new GoogleGenAI({ apiKey });
+      const response = await ai.models.generateContent({
+        model,
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        config: { thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }, maxOutputTokens: 20 },
+      });
+      return cleanTitle(response.text ?? "");
+    }
+
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) return null;
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 20,
+        include_reasoning: false,
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return cleanTitle(data.choices?.[0]?.message?.content ?? "");
+  } catch {
+    // Best-effort -- a titling failure should never surface to the user.
+    return null;
+  }
+}
+
+function cleanTitle(raw: string): string | null {
+  const cleaned = raw.trim().replace(/^["']|["']$/g, "").replace(/[.!]+$/, "");
+  return cleaned.length > 0 ? cleaned.slice(0, 60) : null;
 }

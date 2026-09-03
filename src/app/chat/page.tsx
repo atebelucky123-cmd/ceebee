@@ -47,6 +47,14 @@ export default function ChatPage() {
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [listening, setListening] = useState(false);
   const [voiceMuted, setVoiceMuted] = useState(false);
+  // Resolved once on mount, same pattern the Weather page already uses
+  // (navigator.geolocation with a silent Lagos-default fallback) -- so
+  // CeeBee's weather answers in chat match what the Weather page shows
+  // instead of always defaulting to a fixed location. If it hasn't
+  // resolved yet by the time a message is sent, that message just goes
+  // out without coordinates (the API falls back to the default) and
+  // later messages pick it up once it's in.
+  const [coords, setCoords] = useState<{ lat: number; lon: number } | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Refs update synchronously (unlike state), which matters here: without
@@ -79,6 +87,14 @@ export default function ChatPage() {
 
   useEffect(() => {
     setVoiceMuted(localStorage.getItem(VOICE_MUTE_KEY) === "1");
+  }, []);
+
+  useEffect(() => {
+    if (!("geolocation" in navigator)) return;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => setCoords({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+      () => setCoords(null) // denied/unavailable -- API falls back to its default location
+    );
   }, []);
 
   // Runs once on mount -- restores whatever conversation was open the last
@@ -198,6 +214,8 @@ export default function ChatPage() {
             role: m.role,
             parts: [{ text: m.text }],
           })),
+          lat: coords?.lat,
+          lon: coords?.lon,
         }),
       });
       const data = await res.json();
@@ -215,6 +233,7 @@ export default function ChatPage() {
       body: JSON.stringify({ role: "model", content: replyText }),
     });
     setLoading(false);
+    return replyText;
   }
 
   function toggleListening() {
@@ -277,12 +296,17 @@ export default function ChatPage() {
     setInput("");
 
     const convId = await ensureConversation();
+    const isFirstMessage = messages.length === 0;
     await fetch(`/api/conversations/${convId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ role: "user", content: text }),
     });
-    if (messages.length === 0) {
+    if (isFirstMessage) {
+      // Placeholder title immediately (matches the old behavior) -- the
+      // real AI-summarized title below replaces it once the first reply
+      // is in, the same way Gemini/ChatGPT rename a chat after your first
+      // message rather than upfront.
       await fetch(`/api/conversations/${convId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -290,7 +314,17 @@ export default function ChatPage() {
       });
     }
 
-    await requestReply(text, messages);
+    const replyText = await requestReply(text, messages);
+
+    if (isFirstMessage && replyText) {
+      // Fire-and-forget -- a titling failure just leaves the placeholder
+      // title in place, never blocks or errors out the chat itself.
+      fetch(`/api/conversations/${convId}/title`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userMessage: text, reply: replyText }),
+      }).catch(() => {});
+    }
   }
 
   function copyMessage(text: string, index: number) {
