@@ -1054,33 +1054,54 @@ export async function generateConversationTitle(userMessage: string, reply: stri
   try {
     if (provider === "gemini") {
       const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) return null;
+      if (!apiKey) {
+        console.error("generateConversationTitle: missing GEMINI_API_KEY");
+        return null;
+      }
       const ai = new GoogleGenAI({ apiKey });
       const response = await ai.models.generateContent({
         model,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
-        config: { thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }, maxOutputTokens: 20 },
+        config: { thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }, maxOutputTokens: 40 },
       });
-      return cleanTitle(response.text ?? "");
+      const title = cleanTitle(response.text ?? "");
+      if (!title) console.error("generateConversationTitle: Gemini returned empty/unusable text", response.text);
+      return title;
     }
 
     const apiKey = process.env.GROQ_API_KEY;
-    if (!apiKey) return null;
+    if (!apiKey) {
+      console.error("generateConversationTitle: missing GROQ_API_KEY");
+      return null;
+    }
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model,
         messages: [{ role: "user", content: prompt }],
-        max_tokens: 20,
+        // GPT-OSS is a reasoning model -- even with include_reasoning:false
+        // suppressing the *visible* trace, it can still spend part of its
+        // token budget reasoning internally before writing the actual
+        // answer. 20 was too tight and likely produced empty content,
+        // which is indistinguishable from a real failure with no logging --
+        // exactly the bug this whole function had.
+        max_tokens: 60,
         include_reasoning: false,
       }),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.error("generateConversationTitle: Groq API error", res.status, await res.text());
+      return null;
+    }
     const data = await res.json();
-    return cleanTitle(data.choices?.[0]?.message?.content ?? "");
-  } catch {
-    // Best-effort -- a titling failure should never surface to the user.
+    const title = cleanTitle(data.choices?.[0]?.message?.content ?? "");
+    if (!title) console.error("generateConversationTitle: Groq returned empty/unusable content", JSON.stringify(data.choices?.[0]));
+    return title;
+  } catch (err) {
+    // Best-effort -- a titling failure should never surface to the user,
+    // but it should at least be visible in the logs instead of vanishing.
+    console.error("generateConversationTitle: unexpected error", err);
     return null;
   }
 }

@@ -20,6 +20,10 @@ export async function POST(
 
   const title = await generateConversationTitle(userMessage, reply);
   if (!title) {
+    // generateConversationTitle already logs the specific reason -- this
+    // just confirms, at the route level, that the placeholder title is
+    // intentionally being left in place rather than silently doing nothing.
+    console.error(`Title generation returned nothing for conversation ${id}; keeping placeholder title.`);
     return NextResponse.json({ title: null });
   }
 

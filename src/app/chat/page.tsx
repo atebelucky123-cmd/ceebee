@@ -317,13 +317,27 @@ export default function ChatPage() {
     const replyText = await requestReply(text, messages);
 
     if (isFirstMessage && replyText) {
-      // Fire-and-forget -- a titling failure just leaves the placeholder
-      // title in place, never blocks or errors out the chat itself.
+      // Fire-and-forget for the send flow itself (a titling failure should
+      // never block or error out the chat) -- but still logged, since a
+      // silently-swallowed failure here was indistinguishable from "it's
+      // just slow" or "it worked but the sidebar hasn't refreshed yet".
       fetch(`/api/conversations/${convId}/title`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userMessage: text, reply: replyText }),
-      }).catch(() => {});
+      })
+        .then(async (res) => {
+          const data = await res.json().catch(() => null);
+          if (!res.ok || !data?.title) {
+            console.error("Chat title generation didn't produce a title:", data);
+          }
+          // Note: this doesn't refresh ChatSidebar's own list -- if the
+          // title genuinely did update here but the sidebar still shows
+          // the old placeholder until you close/reopen it, that's a
+          // separate, known gap (ChatSidebar's own fetch timing), not
+          // this titling call failing.
+        })
+        .catch((err) => console.error("Chat title request failed:", err));
     }
   }
 
