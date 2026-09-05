@@ -142,6 +142,24 @@ const RAW_TOOLS: NeutralTool[] = [
     },
   },
   {
+    name: "create_reminder",
+    description:
+      "Sets a reminder for Shina -- use this instead of create_schedule_event whenever she specifically says 'reminder' or 'remind me', not just 'schedule' or 'add an event'. Under the hood it's the same Schedule item (it'll show up on her Schedule tab too, and on her dedicated Reminders list), but calling this tool directly -- rather than trying to simulate a reminder via create_schedule_event's optional remind_before_minutes field -- is what makes it reliably show up as a reminder rather than an easy-to-miss plain schedule item.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        event_date: { type: "string", description: "YYYY-MM-DD. Defaults to today if she doesn't say." },
+        start_time: { type: "string", description: "HH:MM, 24-hour -- the time she wants reminded, e.g. '11:00' for 11am." },
+        remind_before_minutes: {
+          type: "number",
+          description: "Minutes before start_time to notify her -- 5, 10, 30, or 60. If she doesn't say how far in advance, omit this entirely -- it defaults to 0, meaning notify right at start_time, which is what 'remind me at 11am' means.",
+        },
+      },
+      required: ["title"],
+    },
+  },
+  {
     name: "list_schedule_events",
     description: "Lists items on Shina's personal Schedule (not Google Calendar) for a given date, including each item's id. Defaults to today if no date is given. Call this before delete_schedule_event if you don't already know the item's id.",
     parameters: {
@@ -333,10 +351,10 @@ const ROUTES: { keywords: string[]; tools: string[] }[] = [
   },
   {
     keywords: [
-      "schedule", "priority", "remind me", "reminder", "routine", "every day", "everyday",
+      "schedule", "priority", "remind me", "reminder", "remind", "routine", "every day", "everyday",
       "each day", "weekdays", "weekends", "recurring", "repeat", "repeats",
     ],
-    tools: ["create_schedule_event", "list_schedule_events", "delete_schedule_event", "update_schedule_event"],
+    tools: ["create_schedule_event", "create_reminder", "list_schedule_events", "delete_schedule_event", "update_schedule_event"],
   },
   {
     keywords: ["task", "to-do", "todo", "checklist"],
@@ -374,7 +392,7 @@ const ROUTES: { keywords: string[]; tools: string[] }[] = [
     keywords: ["event", "events", "add", "book"],
     tools: [
       "create_calendar_event", "list_upcoming_events",
-      "create_schedule_event", "list_schedule_events",
+      "create_schedule_event", "create_reminder", "list_schedule_events",
       "create_task", "create_note",
     ],
   },
@@ -430,6 +448,18 @@ async function executeTool(
       return updateCalendarEvent(refreshToken, args.eventId as string, args as never);
     case "create_schedule_event":
       return createScheduleEvent(args as never);
+    case "create_reminder":
+      // Same underlying schedule_events row create_schedule_event uses --
+      // this just guarantees the date defaults sensibly and
+      // remind_before_minutes is never left unset, since an unset value
+      // here means "not a reminder at all" as far as the Reminders tab
+      // and the actual push-notification scheduler are concerned.
+      return createScheduleEvent({
+        title: args.title as string,
+        event_date: (args.event_date as string | undefined) ?? todayLagosDateKey(),
+        start_time: (args.start_time as string | undefined) ?? null,
+        remind_before_minutes: (args.remind_before_minutes as number | undefined) ?? 0,
+      } as never);
     case "list_schedule_events":
       return listScheduleEvents((args.date as string | undefined) ?? todayLagosDateKey());
     case "delete_schedule_event":
@@ -524,6 +554,12 @@ function formatLocally(name: string, args: Record<string, unknown>, result: unkn
         return `Done — added "${args.title}"${time} to your schedule, repeating ${label} (${r.occurrences} days, priority ${priority}).${remind}`;
       }
       return `Done — added "${args.title}"${time} to your schedule (priority ${priority}).${remind}`;
+    }
+    case "create_reminder": {
+      const time = args.start_time ? ` at ${args.start_time}` : "";
+      const remindMinutes = (args.remind_before_minutes as number | undefined) ?? 0;
+      const remind = remindMinutes === 0 ? "right when it starts" : `${remindMinutes} minutes before`;
+      return `Done — I'll remind you to "${args.title}"${time} (${remind}). It's on your Reminders list.`;
     }
     case "list_schedule_events": {
       const events = result as { id: string; title: string; start_time: string | null; priority: number; remind_before_minutes: number | null }[];
@@ -930,7 +966,7 @@ If something repeats "every day"/"everyday", set recurrence to "daily" on create
 
 To delete, remove, or edit/change something, you need its id first. If you don't already have it from earlier in this conversation, call the matching list tool first (list_schedule_events, list_upcoming_events, list_tasks, or list_notes), find the item that matches what Shina described, then call the delete or update tool with its id. Every destination has both an edit and a delete tool now -- Calendar, Schedule, Tasks, and Notes -- so never tell her something can't be edited or deleted; look its id up and do it. When editing, only pass the fields that are actually changing. Never tell her something was deleted, added, or changed unless a tool actually returned a real result confirming it -- if you're not certain, say so plainly instead of guessing.
 
-If Shina asks for a "reminder" specifically (not just a plain schedule item), you must set remind_before_minutes on create_schedule_event or update_schedule_event -- default it to 0 (notify right when it starts) if she doesn't say how far in advance. A schedule item with remind_before_minutes left unset produces no notification at all, so never skip it when she used the word "reminder" or "remind me".
+If Shina asks for a "reminder" specifically -- not just a plain schedule item -- use the create_reminder tool, not create_schedule_event. It's the same underlying Schedule item, but calling it directly is what makes it reliably show up on her Reminders list; trying to simulate a reminder by setting create_schedule_event's remind_before_minutes field yourself is fragile and has caused reminders to go missing before. If she doesn't say how far in advance to remind her, leave remind_before_minutes out of create_reminder entirely -- it defaults to notifying her right at the time she gave.
 
 When saving a note or a task, pass Shina's own wording through exactly as she said or typed it -- do not fix, rephrase, or substitute her words with different terms, even if they contain typos or seem unusual. If something is genuinely ambiguous, ask rather than guessing at what she meant.
 

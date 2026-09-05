@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { RECURRENCE_OPTIONS, WEEKDAY_LABELS, type Recurrence } from "@/lib/recurrence";
+import DatePicker from "./DatePicker";
 
 const REMIND_OPTIONS = [
   { label: "Don't remind me", value: "" },
@@ -169,12 +170,7 @@ export default function AddEventForm({
             <label className="text-xs text-neutral-500 block mb-1">
               Date {recurrence !== "none" ? "(first occurrence)" : ""}
             </label>
-            <input
-              type="date"
-              value={eventDate}
-              onChange={(e) => setEventDate(e.target.value)}
-              className="w-full bg-neutral-800 rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-amber-400"
-            />
+            <DatePicker value={eventDate} onChange={setEventDate} />
           </div>
 
           <div className="grid grid-cols-2 gap-3">

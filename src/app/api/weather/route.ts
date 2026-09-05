@@ -8,9 +8,13 @@ export async function GET(req: NextRequest) {
   try {
     const data = await fetchWeather(lat, lon);
     return NextResponse.json(data);
-  } catch {
+  } catch (err) {
+    // Previously swallowed silently -- a 500 with zero information in
+    // Vercel's own function logs, so there was no way to tell whether
+    // Open-Meteo was down, rate-limiting, or something else entirely.
+    console.error("Weather route error:", err);
     return NextResponse.json(
-      { error: "Couldn't fetch weather" },
+      { error: err instanceof Error ? err.message : "Couldn't fetch weather" },
       { status: 500 }
     );
   }

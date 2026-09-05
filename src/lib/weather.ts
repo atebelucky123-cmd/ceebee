@@ -72,38 +72,62 @@ export async function fetchWeather(
     throw new Error(`Weather service returned ${res.status}`);
   }
 
-  const data = await res.json();
-  if (!data?.current || !data?.hourly || !data?.daily) {
+  // Open-Meteo is expected to return JSON on a 200 -- but under load or
+  // abuse-rate-limiting it (or an intermediary proxy) can serve a plain
+  // text/HTML response with a 200 status. res.json() would then throw a raw
+  // "Unexpected token '<' is not valid JSON"-style SyntaxError, which used
+  // to leak straight to the chat as unreadable gibberish. This gives a
+  // clear, honest error instead.
+  let data: unknown;
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error("Weather service returned an unreadable response -- try again in a moment.");
+  }
+  if (
+    !data ||
+    typeof data !== "object" ||
+    !("current" in data) ||
+    !("hourly" in data) ||
+    !("daily" in data)
+  ) {
     throw new Error("Weather service returned an unexpected response");
   }
+  // Shape confirmed above -- the fields' internal structure past this point
+  // is still trusted from Open-Meteo's documented response, same as before.
+  const weatherData = data as {
+    current: { temperature_2m: number; weather_code: number; relative_humidity_2m: number; wind_speed_10m: number; precipitation_probability: number };
+    hourly: { time: string[]; temperature_2m: number[]; weather_code: number[]; precipitation_probability: number[] };
+    daily: { time: string[]; temperature_2m_max: number[]; temperature_2m_min: number[]; weather_code: number[]; precipitation_probability_max: number[] };
+  };
 
-  const nowIndex = data.hourly.time.findIndex(
+  const nowIndex = weatherData.hourly.time.findIndex(
     (t: string) => new Date(t).getTime() >= Date.now()
   );
   const hourlySlice = <T,>(arr: T[]) => arr.slice(nowIndex, nowIndex + 24);
 
   return {
-    currentTemp: Math.round(data.current.temperature_2m),
-    condition: describeWeatherCode(data.current.weather_code),
-    humidity: data.current.relative_humidity_2m,
-    windSpeed: Math.round(data.current.wind_speed_10m),
-    precipChance: data.current.precipitation_probability,
-    high: Math.round(data.daily.temperature_2m_max[0]),
-    low: Math.round(data.daily.temperature_2m_min[0]),
-    hourly: (hourlySlice(data.hourly.time) as string[]).map((time, i) => ({
+    currentTemp: Math.round(weatherData.current.temperature_2m),
+    condition: describeWeatherCode(weatherData.current.weather_code),
+    humidity: weatherData.current.relative_humidity_2m,
+    windSpeed: Math.round(weatherData.current.wind_speed_10m),
+    precipChance: weatherData.current.precipitation_probability,
+    high: Math.round(weatherData.daily.temperature_2m_max[0]),
+    low: Math.round(weatherData.daily.temperature_2m_min[0]),
+    hourly: hourlySlice(weatherData.hourly.time).map((time, i) => ({
       time,
-      temp: Math.round(hourlySlice(data.hourly.temperature_2m)[i] as number),
+      temp: Math.round(hourlySlice(weatherData.hourly.temperature_2m)[i]),
       condition: describeWeatherCode(
-        hourlySlice(data.hourly.weather_code)[i] as number
+        hourlySlice(weatherData.hourly.weather_code)[i]
       ),
-      precipChance: hourlySlice(data.hourly.precipitation_probability)[i] as number,
+      precipChance: hourlySlice(weatherData.hourly.precipitation_probability)[i],
     })),
-    daily: (data.daily.time as string[]).map((date, i) => ({
+    daily: weatherData.daily.time.map((date, i) => ({
       date,
-      high: Math.round(data.daily.temperature_2m_max[i]),
-      low: Math.round(data.daily.temperature_2m_min[i]),
-      condition: describeWeatherCode(data.daily.weather_code[i]),
-      precipChance: data.daily.precipitation_probability_max[i],
+      high: Math.round(weatherData.daily.temperature_2m_max[i]),
+      low: Math.round(weatherData.daily.temperature_2m_min[i]),
+      condition: describeWeatherCode(weatherData.daily.weather_code[i]),
+      precipChance: weatherData.daily.precipitation_probability_max[i],
     })),
   };
 }

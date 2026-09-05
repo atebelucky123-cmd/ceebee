@@ -3,92 +3,137 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 
-function urlBase64ToUint8Array(base64String: string) {
-  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
-  const rawData = atob(base64);
-  return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
+type Email = {
+  id: string;
+  threadId: string;
+  messageIdHeader: string;
+  from: string;
+  subject: string;
+  date: string;
+  snippet: string;
+  unread: boolean;
+  accountEmail: string;
+  accountLabel: string;
+};
+
+type Account = { email: string; label: string };
+
+function extractEmailAddress(from: string) {
+  const match = from.match(/<(.+)>/);
+  return match ? match[1] : from;
 }
 
-type ModelStats = {
-  label: string;
-  totalRequests: number;
-  totalPromptTokens: number;
-  totalOutputTokens: number;
-  totalToolCalls: number;
-  avgLatencyMs: number;
-};
-
-type Stats = {
-  byModel: Record<string, ModelStats>;
-  recent: {
-    id: string;
-    model: string;
-    prompt_tokens: number;
-    output_tokens: number;
-    tool_calls: number;
-    latency_ms: number;
-    created_at: string;
-  }[];
-};
-
-export default function DevToolsPage() {
-  const [stats, setStats] = useState<Stats | null>(null);
+export default function EmailsPage() {
+  const [emails, setEmails] = useState<Email[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [filter, setFilter] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [pushStatus, setPushStatus] = useState<"idle" | "enabling" | "enabled" | "error">("idle");
-  const [models, setModels] = useState<{ id: string; label: string }[]>([]);
-  const [currentModel, setCurrentModel] = useState<string>("");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [fullBody, setFullBody] = useState<string | null>(null);
+  const [bodyLoading, setBodyLoading] = useState(false);
+  const [replyingTo, setReplyingTo] = useState<string | null>(null);
+  const [replyText, setReplyText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sentIds, setSentIds] = useState<Set<string>>(new Set());
+  const [countsByLabel, setCountsByLabel] = useState<Record<string, number>>({});
 
   useEffect(() => {
-    fetch("/api/usage-stats")
+    fetch("/api/accounts")
       .then((r) => r.json())
-      .then(setStats)
-      .finally(() => setLoading(false));
+      .then((data) => setAccounts(data.accounts ?? []));
 
-    fetch("/api/settings/model")
+    // Unfiltered fetch, purely to compute unread counts per account tab --
+    // independent of whichever filter is currently displayed.
+    fetch("/api/emails")
       .then((r) => r.json())
       .then((data) => {
-        setCurrentModel(data.model);
-        setModels(data.available ?? []);
+        const counts: Record<string, number> = {};
+        for (const e of data.emails ?? []) {
+          if (e.unread) counts[e.accountLabel] = (counts[e.accountLabel] ?? 0) + 1;
+        }
+        setCountsByLabel(counts);
       });
   }, []);
 
-  async function changeModel(modelId: string) {
-    setCurrentModel(modelId);
-    await fetch("/api/settings/model", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: modelId }),
-    });
+  useEffect(() => {
+    setLoading(true);
+    const params = filter ? `?label=${filter}` : "";
+    fetch(`/api/emails${params}`)
+      .then((r) => r.json())
+      .then((data) => setEmails(data.emails ?? []))
+      .finally(() => setLoading(false));
+  }, [filter]);
+
+  async function toggleExpand(email: Email) {
+    if (expandedId === email.id) {
+      setExpandedId(null);
+      setFullBody(null);
+      return;
+    }
+    setExpandedId(email.id);
+    setFullBody(null);
+    setBodyLoading(true);
+
+    // Optimistic: opening it counts as read immediately in the UI, the
+    // server call below makes it official on Gmail's side.
+    setEmails((prev) =>
+      prev.map((e) => (e.id === email.id ? { ...e, unread: false } : e))
+    );
+    if (email.unread) {
+      setCountsByLabel((prev) => ({
+        ...prev,
+        [email.accountLabel]: Math.max((prev[email.accountLabel] ?? 1) - 1, 0),
+      }));
+    }
+
+    try {
+      const res = await fetch(
+        `/api/emails/${email.id}?accountLabel=${email.accountLabel}`
+      );
+      const data = await res.json();
+      setFullBody(data.body ?? "(Couldn't load body)");
+    } finally {
+      setBodyLoading(false);
+    }
   }
 
-  async function enablePushNotifications() {
-    setPushStatus("enabling");
+  function openReply(email: Email) {
+    setReplyingTo(email.id);
+    setReplyText("");
+  }
+
+  async function sendReply(email: Email) {
+    if (!replyText.trim()) return;
+    setSending(true);
     try {
-      const permission = await Notification.requestPermission();
-      if (permission !== "granted") {
-        setPushStatus("error");
-        return;
-      }
-
-      const registration = await navigator.serviceWorker.ready;
-      const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-      if (!publicKey) throw new Error("Missing NEXT_PUBLIC_VAPID_PUBLIC_KEY");
-
-      const subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(publicKey),
-      });
-
-      await fetch("/api/push/subscribe", {
+      const res = await fetch("/api/emails/reply", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(subscription),
+        body: JSON.stringify({
+          accountLabel: email.accountLabel,
+          messageId: email.id,
+          threadId: email.threadId,
+          inReplyToMessageId: email.messageIdHeader,
+          to: extractEmailAddress(email.from),
+          subject: email.subject,
+          body: replyText,
+        }),
       });
-
-      setPushStatus("enabled");
-    } catch {
-      setPushStatus("error");
+      if (res.ok) {
+        setSentIds((prev) => new Set(prev).add(email.id));
+        setEmails((prev) =>
+          prev.map((e) => (e.id === email.id ? { ...e, unread: false } : e))
+        );
+        if (email.unread) {
+          setCountsByLabel((prev) => ({
+            ...prev,
+            [email.accountLabel]: Math.max((prev[email.accountLabel] ?? 1) - 1, 0),
+          }));
+        }
+        setReplyingTo(null);
+      }
+    } finally {
+      setSending(false);
     }
   }
 
@@ -96,151 +141,154 @@ export default function DevToolsPage() {
     <div className="flex flex-col flex-1 min-h-0 w-full">
       <header className="px-4 py-3 border-b border-neutral-800 flex items-center gap-3">
         <Link
-          href="/chat"
+          href="/dashboard"
           className="bg-amber-400 text-neutral-950 text-xs font-medium px-3 py-1.5 rounded-full"
         >
           Back
         </Link>
-        <h1 className="font-semibold text-lg">Developer Tools</h1>
+        <h1 className="font-semibold text-lg">Emails</h1>
       </header>
 
-      <main className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-4">
-        <div>
-          <h2 className="text-xs uppercase text-neutral-500 font-medium px-1 mb-2">
-            AI Model
-          </h2>
-          <div className="space-y-2">
-            {models.map((m) => (
+      <main className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-3">
+        {accounts.length > 1 && (
+          <div className="flex gap-2 overflow-x-auto pb-1 text-xs">
+            <button
+              onClick={() => setFilter(null)}
+              className={`px-3 py-1.5 rounded-full whitespace-nowrap flex items-center gap-1.5 ${
+                filter === null
+                  ? "bg-amber-400 text-neutral-950"
+                  : "bg-neutral-900 text-neutral-400"
+              }`}
+            >
+              All accounts
+              {Object.values(countsByLabel).reduce((a, b) => a + b, 0) > 0 && (
+                <span className="bg-neutral-950/20 rounded-full min-w-[16px] h-4 px-1 flex items-center justify-center text-[10px] font-semibold">
+                  {Object.values(countsByLabel).reduce((a, b) => a + b, 0)}
+                </span>
+              )}
+            </button>
+            {accounts.map((a) => (
               <button
-                key={m.id}
-                onClick={() => changeModel(m.id)}
-                className={`w-full text-left px-4 py-3 rounded-xl text-sm flex justify-between items-center ${
-                  currentModel === m.id
-                    ? "bg-amber-400 text-neutral-950 font-medium"
-                    : "bg-neutral-900 text-neutral-300"
+                key={a.label}
+                onClick={() => setFilter(a.label)}
+                className={`px-3 py-1.5 rounded-full whitespace-nowrap capitalize flex items-center gap-1.5 ${
+                  filter === a.label
+                    ? "bg-amber-400 text-neutral-950"
+                    : "bg-neutral-900 text-neutral-400"
                 }`}
               >
-                {m.label}
-                {currentModel === m.id && <span className="text-xs">Active</span>}
+                {a.label}
+                {!!countsByLabel[a.label] && (
+                  <span className="bg-amber-400/90 text-neutral-950 rounded-full min-w-[16px] h-4 px-1 flex items-center justify-center text-[10px] font-semibold">
+                    {countsByLabel[a.label]}
+                  </span>
+                )}
               </button>
             ))}
           </div>
-        </div>
-
-        <div>
-          <h2 className="text-xs uppercase text-neutral-500 font-medium px-1 mb-2">
-            Push Notifications
-          </h2>
-          <button
-            onClick={enablePushNotifications}
-            disabled={pushStatus === "enabling" || pushStatus === "enabled"}
-            className="w-full bg-amber-400 text-neutral-950 rounded-xl py-3 text-sm font-medium disabled:opacity-50"
-          >
-            {pushStatus === "enabled"
-              ? "Notifications enabled ✓"
-              : pushStatus === "enabling"
-              ? "Enabling…"
-              : pushStatus === "error"
-              ? "Failed — tap to retry"
-              : "Enable reminder notifications"}
-          </button>
-        </div>
+        )}
 
         {loading ? (
           <div className="text-neutral-500 text-sm text-center py-8">
             Loading…
           </div>
-        ) : !stats ? (
+        ) : emails.length === 0 ? (
           <div className="text-neutral-500 text-sm text-center py-8">
-            Couldn&apos;t load usage stats.
+            No emails found. Connect a Google account first.
           </div>
         ) : (
-          <>
-            <div>
-              <h2 className="text-xs uppercase text-neutral-500 font-medium px-1 mb-2">
-                Today&apos;s Usage by Model
-              </h2>
-              <div className="space-y-3">
-                {Object.entries(stats.byModel).map(([modelId, m]) => (
-                  <div key={modelId}>
-                    <p className="text-xs text-neutral-400 px-1 mb-1">{m.label}</p>
-                    <div className="grid grid-cols-2 gap-2">
-                      <StatCard label="Requests" value={m.totalRequests} />
-                      <StatCard label="Tool calls" value={m.totalToolCalls} />
-                      <StatCard label="Prompt tokens" value={m.totalPromptTokens} />
-                      <StatCard label="Output tokens" value={m.totalOutputTokens} />
-                      <StatCard label="Avg latency" value={`${m.avgLatencyMs}ms`} />
+          <div className="space-y-2">
+            {emails.map((e) => (
+              <div
+                key={`${e.accountEmail}-${e.id}`}
+                className="bg-neutral-900 rounded-xl px-4 py-3"
+              >
+                <button
+                  onClick={() => toggleExpand(e)}
+                  className="w-full text-left"
+                >
+                  <div className="flex justify-between items-start gap-2">
+                    <span className="text-sm truncate text-neutral-300 flex items-center gap-2">
+                      {e.unread && (
+                        <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+                      )}
+                      {e.from}
+                    </span>
+                    <span className="text-[10px] text-neutral-600 shrink-0 capitalize">
+                      {e.accountLabel}
+                    </span>
+                  </div>
+                  <div className="text-sm mt-0.5">{e.subject}</div>
+                  <p className="text-xs text-neutral-500 mt-1 line-clamp-1">
+                    {e.snippet}
+                  </p>
+                </button>
+
+                {expandedId === e.id && (
+                  <div className="mt-3 pt-3 border-t border-neutral-800">
+                    {bodyLoading ? (
+                      <p className="text-xs text-neutral-500">Loading full email…</p>
+                    ) : (
+                      <>
+                        <p className="text-sm text-neutral-300 whitespace-pre-wrap">
+                          {fullBody}
+                        </p>
+                        <a
+                          href={`https://mail.google.com/mail/?authuser=${encodeURIComponent(
+                            e.accountEmail
+                          )}#all/${e.threadId}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-amber-400 text-xs underline mt-2 inline-block"
+                        >
+                          Go to Gmail
+                        </a>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {sentIds.has(e.id) ? (
+                  <p className="text-xs text-amber-400 mt-2">Reply sent.</p>
+                ) : replyingTo === e.id ? (
+                  <div className="mt-2 space-y-2">
+                    <textarea
+                      value={replyText}
+                      onChange={(ev) => setReplyText(ev.target.value)}
+                      placeholder="Write your reply…"
+                      rows={3}
+                      autoFocus
+                      className="w-full bg-neutral-800 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400 resize-none"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => sendReply(e)}
+                        disabled={sending}
+                        className="bg-amber-400 text-neutral-950 text-xs font-medium px-4 py-1.5 rounded-full disabled:opacity-50"
+                      >
+                        {sending ? "Sending…" : "Send"}
+                      </button>
+                      <button
+                        onClick={() => setReplyingTo(null)}
+                        className="bg-neutral-800 text-neutral-300 text-xs px-4 py-1.5 rounded-full"
+                      >
+                        Cancel
+                      </button>
                     </div>
                   </div>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <h2 className="text-xs uppercase text-neutral-500 font-medium px-1 mb-2">
-                Recent Requests
-              </h2>
-              <div className="bg-neutral-900 rounded-2xl divide-y divide-neutral-800">
-                {stats.recent.length === 0 ? (
-                  <p className="text-neutral-500 text-sm text-center py-6">
-                    No requests logged today yet.
-                  </p>
                 ) : (
-                  stats.recent.map((r) => (
-                    <div key={r.id} className="px-4 py-2.5 text-xs flex justify-between">
-                      <span className="text-neutral-400">
-                        {new Date(r.created_at).toLocaleTimeString("en-GB", {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </span>
-                      <span className="text-neutral-500 truncate max-w-[80px]">{r.model}</span>
-                      <span className="text-neutral-300">
-                        {r.prompt_tokens ?? 0}+{r.output_tokens ?? 0} tok
-                      </span>
-                      <span className="text-neutral-500">{r.tool_calls} tools</span>
-                      <span className="text-neutral-500">{r.latency_ms}ms</span>
-                    </div>
-                  ))
+                  <button
+                    onClick={() => openReply(e)}
+                    className="text-amber-400 text-xs font-medium mt-2"
+                  >
+                    Reply
+                  </button>
                 )}
               </div>
-            </div>
-
-            <div>
-              <h2 className="text-xs uppercase text-neutral-500 font-medium px-1 mb-2">
-                Links
-              </h2>
-              <div className="space-y-2">
-                <a
-                  href="https://supabase.com/dashboard"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="block bg-neutral-900 rounded-xl px-4 py-3 text-sm text-amber-400"
-                >
-                  Open Supabase Dashboard
-                </a>
-                <a
-                  href="https://vercel.com/dashboard"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="block bg-neutral-900 rounded-xl px-4 py-3 text-sm text-amber-400"
-                >
-                  Open Vercel Dashboard
-                </a>
-              </div>
-            </div>
-          </>
+            ))}
+          </div>
         )}
       </main>
-    </div>
-  );
-}
-
-function StatCard({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div className="bg-neutral-900 rounded-xl px-3 py-3">
-      <div className="text-lg font-semibold">{value}</div>
-      <div className="text-[11px] text-neutral-500">{label}</div>
     </div>
   );
 }

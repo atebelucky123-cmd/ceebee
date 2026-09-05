@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import WeatherWidget from "../components/WeatherWidget";
 import AddEventForm from "../components/AddEventForm";
+import DatePicker from "../components/DatePicker";
 
 type Task = {
   id: string;
@@ -506,11 +507,11 @@ function Schedule({
 
   return (
     <div className="space-y-3">
-      <input
-        type="date"
+      <DatePicker
         value={selectedDate}
-        onChange={(e) => onDateChange(e.target.value)}
-        className="w-full bg-neutral-900 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+        onChange={(date) => {
+          if (isCompleteDateString(date)) onDateChange(date);
+        }}
       />
 
       <div className="flex justify-between items-center text-xs">
