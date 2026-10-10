@@ -17,10 +17,78 @@ const FEMALE_US_VOICE_NAMES = [
   "Microsoft Zira", "Aria", "Jenny", "Zira", "Female",
 ];
 
-let currentAudio: HTMLAudioElement | null = null;
 let currentUrl: string | null = null;
 let currentRequest: AbortController | null = null;
 let generation = 0;
+
+// --- iPhone (iOS Safari) audio unlock ----------------------------------
+// iOS only lets a page start sound *during* a tap. CeeBee's voice arrives
+// ~4s after the tap, by which time Safari silently refuses to play it. The
+// fix: one shared <audio> element, "unlocked" by playing a split second of
+// silence synchronously inside the tap; iOS then allows that same element
+// to play the real voice whenever it arrives. The first tap anywhere in the
+// app unlocks it too, so auto-voice replies also work on iPhone.
+
+let player: HTMLAudioElement | null = null;
+let unlocked = false;
+
+function silentWavUrl(): string {
+  const sampleRate = 8000;
+  const samples = 1200; // 0.15s
+  const buf = new ArrayBuffer(44 + samples * 2);
+  const v = new DataView(buf);
+  const str = (o: number, t: string) => [...t].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  str(0, "RIFF");
+  v.setUint32(4, 36 + samples * 2, true);
+  str(8, "WAVE");
+  str(12, "fmt ");
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true);
+  v.setUint32(24, sampleRate, true);
+  v.setUint32(28, sampleRate * 2, true);
+  v.setUint16(32, 2, true);
+  v.setUint16(34, 16, true);
+  str(36, "data");
+  v.setUint32(40, samples * 2, true);
+  return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+}
+
+function getPlayer(): HTMLAudioElement {
+  if (!player) {
+    player = new Audio();
+    player.setAttribute("playsinline", "");
+  }
+  return player;
+}
+
+// Must be called synchronously from a tap/click handler.
+export function unlockAudio() {
+  if (typeof window === "undefined" || unlocked) return;
+  const p = getPlayer();
+  p.src = silentWavUrl();
+  p.play()
+    .then(() => {
+      unlocked = true;
+    })
+    .catch(() => {});
+  // The browser voice (fallback) has the same rule on iOS.
+  try {
+    window.speechSynthesis?.speak(new SpeechSynthesisUtterance(""));
+  } catch {
+    // not supported
+  }
+}
+
+if (typeof window !== "undefined") {
+  const firstTap = () => {
+    unlockAudio();
+    window.removeEventListener("pointerdown", firstTap);
+    window.removeEventListener("touchend", firstTap);
+  };
+  window.addEventListener("pointerdown", firstTap);
+  window.addEventListener("touchend", firstTap);
+}
 
 export function getVoicePreference(): string | null {
   try {
@@ -59,10 +127,7 @@ export function stopSpeaking() {
   generation++;
   currentRequest?.abort();
   currentRequest = null;
-  if (currentAudio) {
-    currentAudio.pause();
-    currentAudio = null;
-  }
+  if (player) player.pause();
   if (currentUrl) {
     URL.revokeObjectURL(currentUrl);
     currentUrl = null;
@@ -93,8 +158,10 @@ function speakWithBrowser(text: string) {
 export async function speakNatural(text: string, voice: string | null = getVoicePreference()) {
   const clean = text.replace(/[*_#`]/g, "").replace(/⚠️/g, "").trim();
   if (!clean) return;
-
   stopSpeaking();
+  // Runs synchronously inside the tap that called us (before any await),
+  // and after stopSpeaking so its pause() can't interrupt the unlock.
+  unlockAudio();
   const myGeneration = generation;
   const controller = new AbortController();
   currentRequest = controller;
@@ -113,12 +180,12 @@ export async function speakNatural(text: string, voice: string | null = getVoice
     if (myGeneration !== generation) return;
 
     const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
-    currentAudio = audio;
     currentUrl = url;
+    const audio = getPlayer();
     audio.onended = () => {
-      if (currentAudio === audio) stopSpeaking();
+      if (myGeneration === generation) stopSpeaking();
     };
+    audio.src = url;
     await audio.play();
   } catch (err) {
     if (myGeneration !== generation || (err instanceof DOMException && err.name === "AbortError")) return;
