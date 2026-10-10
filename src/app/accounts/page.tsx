@@ -9,12 +9,21 @@ export default function AccountsPage() {
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [draftLabel, setDraftLabel] = useState("");
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   function load() {
     fetch("/api/accounts")
       .then((r) => r.json())
-      .then((data) => setAccounts(data.accounts ?? []))
-      .catch(() => setAccounts([]));
+      .then((data) => {
+        // A failed lookup (e.g. the database is unreachable) used to look
+        // exactly like "no accounts connected" -- say what actually happened.
+        setLoadError(data.error ? "Couldn't reach CeeBee's database, so your connected accounts can't be shown right now." : null);
+        setAccounts(data.accounts ?? []);
+      })
+      .catch(() => {
+        setLoadError("Couldn't load your accounts. Check your connection.");
+        setAccounts([]);
+      });
   }
 
   useEffect(load, []);
@@ -54,6 +63,8 @@ export default function AccountsPage() {
           <div className="text-neutral-500 text-sm text-center py-8">
             Loading…
           </div>
+        ) : loadError ? (
+          <div className="text-ember text-sm text-center py-8">{loadError}</div>
         ) : accounts.length === 0 ? (
           <div className="text-neutral-500 text-sm text-center py-8">
             No accounts connected yet.

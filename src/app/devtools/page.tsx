@@ -42,7 +42,10 @@ export default function DevToolsPage() {
   useEffect(() => {
     fetch("/api/usage-stats")
       .then((r) => r.json())
-      .then(setStats)
+      // An error body ({ error }) is not stats -- rendering it as stats
+      // crashed the whole page whenever the database was unreachable.
+      .then((data) => setStats(data && !data.error ? data : null))
+      .catch(() => setStats(null))
       .finally(() => setLoading(false));
 
     fetch("/api/settings/model")
