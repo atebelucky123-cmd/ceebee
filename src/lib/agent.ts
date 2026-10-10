@@ -13,7 +13,7 @@ import {
 } from "@/lib/schedule";
 import { createTask, listTasks, updateTask, deleteTask } from "@/lib/tasks";
 import { createNote, listNotes, updateNote, deleteNote } from "@/lib/notes";
-import { listRecentEmails, getFullEmailBody, getEmailMeta } from "@/lib/gmail";
+import { listRecentEmails, getFullEmailBody, getEmailMeta, markEmailsRead, isMissingScopeError } from "@/lib/gmail";
 import { getAgenda, getWeatherCached } from "@/lib/agenda";
 import { buildDayContext, describeDayContext, type DayContext } from "@/lib/context";
 import { getRelevantMemoryFacts, addMemoryFact } from "@/lib/memory";
@@ -364,6 +364,19 @@ const RAW_TOOLS: NeutralTool[] = [
     },
   },
   {
+    name: "mark_emails_read",
+    description:
+      "Marks emails as read in Gmail. Pass specific ids (from list_recent_emails), or all_unread: true to clear every unread email in the inbox. Optionally limit to one account by label; otherwise all_unread applies to every connected account.",
+    parameters: {
+      type: "object",
+      properties: {
+        ids: { type: "array", items: { type: "string" }, description: "Email ids to mark read" },
+        all_unread: { type: "boolean" },
+        account: { type: "string", description: "Account label, e.g. 'Personal'" },
+      },
+    },
+  },
+  {
     name: "get_weather",
     description: "Gets the forecast for a given day. Today's conditions and rain windows are already in your context -- use this for days further ahead.",
     parameters: {
@@ -401,6 +414,7 @@ const WRITE_TOOLS = new Set([
   "create_task", "update_task", "delete_task",
   "create_note", "update_note", "delete_note",
   "remember_fact",
+  "mark_emails_read",
 ]);
 
 // --- Dynamic tool routing -------------------------------------------------
@@ -463,9 +477,9 @@ const ROUTES: { keywords: string[]; tools: string[] }[] = [
   {
     keywords: [
       "email", "inbox", "gmail", "reply", "respond", "message from", "mail", "draft", "write to", "tell ",
-      "let ", "follow up", "follow-up", "summar", "unread", "send",
+      "let ", "follow up", "follow-up", "summar", "unread", "send", "as read", "mark all", "clear my inbox",
     ],
-    tools: ["list_recent_emails", "read_email", "draft_email"],
+    tools: ["list_recent_emails", "read_email", "draft_email", "mark_emails_read"],
   },
   { keywords: ["remember", "don't forget", "keep in mind", "note that", "my name", "i prefer", "i like"], tools: ["remember_fact"] },
 ];
@@ -657,6 +671,13 @@ async function executeTool(name: string, args: Record<string, unknown>, env: Too
       }
 
       if (!to) throw new Error("Who should this go to? I need an email address.");
+      // Automated senders (security alerts, receipts, notifications) don't
+      // read replies -- drafting one only invites a pointless or confusing send.
+      if (/no-?reply|do-?not-?reply|mailer-daemon|notifications?@/i.test(to)) {
+        throw new Error(
+          `${to} is an automated address that doesn't read replies, so I didn't draft one. If it's a Google security alert about CeeBee, that's from you connecting your account -- nothing to reply to.`
+        );
+      }
       return {
         status: "draft_ready_NOT_sent",
         draft: {
@@ -670,6 +691,29 @@ async function executeTool(name: string, args: Record<string, unknown>, env: Too
           replyToMessageId,
         },
       };
+    }
+    case "mark_emails_read": {
+      const ids = (args.ids as string[] | undefined) ?? [];
+      if (!args.all_unread && ids.length === 0) throw new Error("Which emails? I need ids, or all_unread.");
+      const targets = args.account ? [accountFor(env, args.account)] : env.accounts;
+      if (targets.length === 0) throw new Error("No Google account connected.");
+      let marked = 0;
+      for (const acc of targets) {
+        try {
+          // Specific ids belong to one mailbox; trying them against each
+          // account just fails harmlessly on the ones they aren't in.
+          marked += await markEmailsRead(acc.refresh_token, args.all_unread ? { all: true } : { ids });
+          if (!args.all_unread) break;
+        } catch (err) {
+          if (isMissingScopeError(err)) {
+            throw new Error(
+              `The ${acc.label} account was connected before I could change emails. Shina needs to tap Reconnect on the Accounts page once to allow marking email read.`
+            );
+          }
+          if (args.all_unread) throw err;
+        }
+      }
+      return { marked };
     }
     case "get_weather":
       return getWeatherCached(env.location).then((w) => {
@@ -750,6 +794,10 @@ function receiptFor(name: string, args: Record<string, unknown>, result: unknown
       return "Deleted that note";
     case "remember_fact":
       return "Remembered that";
+    case "mark_emails_read": {
+      const r = result as { marked: number };
+      return r.marked === 0 ? "No unread emails to mark" : `Marked ${r.marked} email${r.marked === 1 ? "" : "s"} as read`;
+    }
     default:
       return null;
   }
@@ -1177,7 +1225,7 @@ If she lists several things, call the matching create tool once per item, all in
 Pass her wording through exactly for tasks and notes. If something is genuinely ambiguous, ask instead of guessing.
 
 EMAIL
-You can list, read and draft emails across all her accounts. You can NOT send -- draft_email shows a card with Send/Edit and Shina sends it herself. Say "Here's the draft" / "ready to go", never "sent". To summarise an email, read_email first. When replying, use reply_to_email_id.
+You can list, read, draft, and mark emails as read across all her accounts. You can NOT send -- draft_email shows a card with Send/Edit and Shina sends it herself. Say "Here's the draft" / "ready to go", never "sent". To summarise an email, read_email first. When replying, use reply_to_email_id.
 
 Current date/time: ${formatted} (Africa/Lagos). Resolve every relative date ("tomorrow", "next Tuesday") against this exact moment. Times are 24h HH:MM; ISO datetimes for Calendar need the +01:00 offset.
 

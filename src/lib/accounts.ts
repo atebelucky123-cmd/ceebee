@@ -37,11 +37,19 @@ export function isReconnectError(err: unknown): boolean {
   return e?.response?.data?.error === "invalid_grant" || /invalid_grant/i.test(e?.message ?? "");
 }
 
-export async function checkAccountConnection(acc: GoogleAccount): Promise<"ok" | "reconnect" | "error"> {
-  const { getAuthenticatedClient } = await import("@/lib/google");
+// "upgrade" = the connection works but predates a permission CeeBee now
+// uses (e.g. gmail.modify for marking email read) -- a Reconnect grants it.
+export async function checkAccountConnection(
+  acc: GoogleAccount
+): Promise<"ok" | "reconnect" | "upgrade" | "error"> {
+  const { getAuthenticatedClient, GOOGLE_SCOPES } = await import("@/lib/google");
   try {
-    await getAuthenticatedClient(acc.refresh_token).getAccessToken();
-    return "ok";
+    const client = getAuthenticatedClient(acc.refresh_token);
+    const { token } = await client.getAccessToken();
+    if (!token) return "error";
+    const info = await client.getTokenInfo(token);
+    const missing = GOOGLE_SCOPES.filter((s) => !s.includes("userinfo") && !info.scopes.includes(s));
+    return missing.length ? "upgrade" : "ok";
   } catch (err) {
     return isReconnectError(err) ? "reconnect" : "error";
   }

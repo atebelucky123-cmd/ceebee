@@ -153,6 +153,47 @@ export async function markAsRead(refreshToken: string, messageId: string) {
   });
 }
 
+// True when Google refused because the account was connected before
+// CeeBee asked for permission to change emails (gmail.modify).
+export function isMissingScopeError(err: unknown): boolean {
+  const e = err as { code?: number; message?: string };
+  return e?.code === 403 || /insufficient (authentication )?scopes?|insufficientPermissions/i.test(e?.message ?? "");
+}
+
+// Marks specific messages -- or, with all: true, every unread inbox message
+// (up to 1000) -- as read. Returns how many were changed.
+export async function markEmailsRead(
+  refreshToken: string,
+  opts: { ids?: string[]; all?: boolean }
+): Promise<number> {
+  const auth = getAuthenticatedClient(refreshToken);
+  const gmail = google.gmail({ version: "v1", auth });
+
+  let ids = opts.ids ?? [];
+  if (opts.all) {
+    ids = [];
+    let pageToken: string | undefined;
+    do {
+      const { data } = await gmail.users.messages.list({
+        userId: "me",
+        q: "is:unread in:inbox",
+        maxResults: 500,
+        pageToken,
+      });
+      ids.push(...(data.messages ?? []).map((m) => m.id!).filter(Boolean));
+      pageToken = data.nextPageToken ?? undefined;
+    } while (pageToken && ids.length < 1000);
+    ids = ids.slice(0, 1000);
+  }
+  if (ids.length === 0) return 0;
+
+  await gmail.users.messages.batchModify({
+    userId: "me",
+    requestBody: { ids, removeLabelIds: ["UNREAD"] },
+  });
+  return ids.length;
+}
+
 export async function sendEmail(
   refreshToken: string,
   to: string,

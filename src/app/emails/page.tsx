@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { CheckIcon, ChevronDownIcon } from "../components/Icons";
 
 type Email = {
   id: string;
@@ -73,6 +74,8 @@ export default function InboxPage() {
   const [countsByLabel, setCountsByLabel] = useState<Record<string, number>>({});
   // Accounts whose Google connection expired -- shown as a Reconnect banner.
   const [reconnect, setReconnect] = useState<string[]>([]);
+  const [markingAll, setMarkingAll] = useState(false);
+  const [markNote, setMarkNote] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/accounts")
@@ -161,6 +164,35 @@ export default function InboxPage() {
     }
   }
 
+  async function markAllRead() {
+    setMarkingAll(true);
+    setMarkNote(null);
+    try {
+      const res = await fetch("/api/emails/mark-read", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: filter }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      if (data.marked > 0) {
+        setEmails((prev) => prev.map((e) => ({ ...e, unread: false })));
+        setCountsByLabel((prev) => (filter ? { ...prev, [filter]: 0 } : {}));
+      }
+      setMarkNote(
+        data.needsReconnect?.length
+          ? `Reconnect ${data.needsReconnect.join(" and ")} on the Accounts page to allow marking email read.`
+          : data.marked
+            ? `Marked ${data.marked} as read.`
+            : "Nothing unread."
+      );
+    } catch {
+      setMarkNote("Couldn't mark emails read. Try again.");
+    } finally {
+      setMarkingAll(false);
+    }
+  }
+
   function askCeeBee(prompt: string) {
     router.push(`/chat?q=${encodeURIComponent(prompt)}`);
   }
@@ -174,6 +206,15 @@ export default function InboxPage() {
       <main className="flex-1 min-h-0 overflow-y-auto px-5 lg:px-10 pt-[max(1.75rem,env(safe-area-inset-top))] lg:pt-9 pb-6 flex flex-col gap-4">
         <div className="flex justify-between items-center gap-3">
           <h1 className="m-0 font-display font-extrabold text-[32px] lg:text-[44px] tracking-tight">Inbox</h1>
+          <div className="flex items-center gap-2">
+          <button
+            onClick={markAllRead}
+            disabled={markingAll || emails.every((e) => !e.unread)}
+            className="h-9 px-3 rounded-full border border-line-strong bg-surface text-[13px] font-semibold flex items-center gap-1.5 hover:border-outline disabled:opacity-40"
+          >
+            <CheckIcon size={15} />
+            {markingAll ? "Marking…" : "Mark all read"}
+          </button>
           {accounts.length > 1 && (
             <label className="relative">
               <span className="sr-only">Account</span>
@@ -190,12 +231,12 @@ export default function InboxPage() {
                   </option>
                 ))}
               </select>
-              <span aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted text-xs">
-                ▾
-              </span>
+              <ChevronDownIcon size={14} className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-muted" />
             </label>
           )}
+          </div>
         </div>
+        {markNote && <p className="text-[13px] text-muted -mt-2 text-right">{markNote}</p>}
 
         {/* CeeBee's triage */}
         <div className="p-4 rounded-[18px] bg-surface border border-line-strong flex flex-col gap-2.5">

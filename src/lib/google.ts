@@ -1,9 +1,12 @@
 import { google } from "googleapis";
 
-// Scopes CeeBee needs: read/send email, full calendar access (for creating
+// Scopes CeeBee needs: read/send email, mark email read (gmail.modify --
+// a superset of gmail.readonly that also allows changing labels like
+// UNREAD, but not permanent deletion), full calendar access (for creating
 // events + Meet links), and basic profile info to tell accounts apart.
+// Accounts connected before gmail.modify was added need a Reconnect.
 export const GOOGLE_SCOPES = [
-  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/gmail.modify",
   "https://www.googleapis.com/auth/gmail.send",
   "https://www.googleapis.com/auth/calendar",
   "https://www.googleapis.com/auth/userinfo.email",

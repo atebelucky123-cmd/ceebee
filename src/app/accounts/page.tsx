@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import VoicePicker from "../components/VoicePicker";
 
-type Account = { email: string; label: string; status?: "ok" | "reconnect" | "error" };
+type Account = { email: string; label: string; status?: "ok" | "reconnect" | "upgrade" | "error" };
 
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<Account[] | null>(null);
@@ -92,13 +92,14 @@ export default function AccountsPage() {
                     {a.label}
                     {a.status === "ok" && <span className="text-honey font-semibold">· Connected</span>}
                     {a.status === "reconnect" && <span className="text-ember font-semibold">· Needs reconnecting</span>}
+                    {a.status === "upgrade" && <span className="text-honey font-semibold">· Reconnect to allow marking email read</span>}
                     {a.status === "error" && <span className="text-muted">· Couldn&apos;t check</span>}
                   </div>
                 )}
               </div>
               {editing !== a.email && (
                 <div className="flex gap-2 shrink-0">
-                  {a.status === "reconnect" && (
+                  {(a.status === "reconnect" || a.status === "upgrade") && (
                     // Reconnecting keeps this account's nickname (see the
                     // OAuth callback), so Personal stays Personal.
                     <a
