@@ -1,26 +1,95 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/*
+  Hive -- CeeBee v2 design system. Honey-on-black: warm blacks, a confident
+  grotesque, and amber used only where CeeBee is acting for you.
+
+  The neutral/amber scales are remapped onto the Hive palette (rather than
+  only adding new names) so every existing page that still uses
+  bg-neutral-900 / text-amber-400 etc. picks up the warm Hive tones without
+  having to be rewritten class by class.
+*/
+@theme {
+  --color-ground: #12100d;
+  --color-surface: #1c1915;
+  --color-raised: #26221c;
+  --color-aside: #17140f;
+  --color-line: #2a251f;
+  --color-line-strong: #332d25;
+  --color-chip: #3a332a;
+  --color-outline: #4a4236;
+  --color-cream: #f4eee2;
+  --color-soft: #d9d0c0;
+  --color-muted: #a89f90;
+  --color-honey: #f4b81a;
+  --color-honey-hover: #ffd35c;
+  --color-ember: #e8743b;
+  --color-hive: #000000;
+
+  --color-neutral-50: #faf6ee;
+  --color-neutral-100: #f4eee2;
+  --color-neutral-200: #e8e0d0;
+  --color-neutral-300: #d9d0c0;
+  --color-neutral-400: #b3a996;
+  --color-neutral-500: #a89f90;
+  --color-neutral-600: #5a5044;
+  --color-neutral-700: #3a332a;
+  --color-neutral-800: #2a251f;
+  --color-neutral-900: #1c1915;
+  --color-neutral-950: #12100d;
+
+  --color-amber-300: #ffd35c;
+  --color-amber-400: #f4b81a;
+  --color-amber-500: #e0a50f;
+
+  --font-sans: var(--font-figtree), system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: var(--font-bricolage), var(--font-figtree), system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, "SF Mono", Menlo, monospace;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  color-scheme: dark;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
+  background: var(--color-ground);
+  color: var(--color-cream);
   font-family: var(--font-sans);
 }
+
+::selection {
+  background: var(--color-honey);
+  color: var(--color-ground);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-honey);
+  outline-offset: 2px;
+}
+
+input[type="checkbox"] {
+  accent-color: var(--color-honey);
+}
+
+/* Thin, warm scrollbars on desktop -- the default bright grey ones clash
+   with the honey-on-black surfaces. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-chip) transparent;
+}
+
+@keyframes ceebee-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+.ceebee-typing span {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--color-honey);
+  animation: ceebee-pulse 1.1s ease-in-out infinite;
+}
+.ceebee-typing span:nth-child(2) { animation-delay: 0.15s; }
+.ceebee-typing span:nth-child(3) { animation-delay: 0.3s; }

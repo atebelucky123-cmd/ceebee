@@ -47,6 +47,30 @@ export async function listRecentEmails(
   return messages;
 }
 
+// Just the headers needed to reply to one message in-thread -- used when
+// CeeBee drafts a reply, so the draft card already carries everything the
+// Send button needs (thread id, Message-ID for In-Reply-To, the sender).
+export async function getEmailMeta(refreshToken: string, messageId: string) {
+  const auth = getAuthenticatedClient(refreshToken);
+  const gmail = google.gmail({ version: "v1", auth });
+  const { data } = await gmail.users.messages.get({
+    userId: "me",
+    id: messageId,
+    format: "metadata",
+    metadataHeaders: ["Subject", "From", "Message-ID", "Reply-To"],
+  });
+  const headers = data.payload?.headers ?? [];
+  const get = (name: string) =>
+    headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? "";
+  return {
+    id: data.id ?? messageId,
+    threadId: data.threadId ?? null,
+    messageIdHeader: get("Message-ID"),
+    from: get("Reply-To") || get("From"),
+    subject: get("Subject"),
+  };
+}
+
 // Strips an HTML email body down to readable plain text. Auto-generated
 // emails (account notifications, marketing sends) often bury their real
 // text/plain alternative under leftover Outlook conditional-comment

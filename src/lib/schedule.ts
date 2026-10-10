@@ -61,7 +61,8 @@ export async function listScheduleEvents(date?: string, sort: "time" | "priority
 
   query =
     sort === "priority"
-      ? query.order("priority", { ascending: true })
+      ? // 5 = urgent, so most important first.
+        query.order("priority", { ascending: false }).order("start_time", { ascending: true, nullsFirst: false })
       : query.order("start_time", { ascending: true, nullsFirst: false });
 
   const { data, error } = await query;
