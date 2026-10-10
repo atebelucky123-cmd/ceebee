@@ -1076,6 +1076,51 @@ async function callGemini(
   return { text: finalText, executed, usage: totalUsage };
 }
 
+// --- Groq requests with rate-limit handling --------------------------------
+// Groq's free tier caps gpt-oss-120b at 8,000 tokens per minute, and one
+// CeeBee turn is ~3-4k tokens, so two quick messages can hit it. Short waits
+// ("try again in 2.4s") are waited out once; otherwise the request moves to
+// gpt-oss-20b, which has its own separate limits. Only if both are busy does
+// the caller get a GroqBusyError (shown to Shina in plain words).
+
+const GROQ_FALLBACK_MODEL = "openai/gpt-oss-20b";
+
+export class GroqBusyError extends Error {
+  constructor() {
+    super("CeeBee is busy (Groq rate limit)");
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function groqRequest(body: Record<string, unknown>, apiKey: string): Promise<any> {
+  const models = [body.model as string];
+  if (body.model !== GROQ_FALLBACK_MODEL) models.push(GROQ_FALLBACK_MODEL);
+
+  for (const model of models) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ ...body, model }),
+      });
+      if (res.ok) return res.json();
+
+      const errText = await res.text();
+      if (res.status === 429 || res.status === 503) {
+        const wait = Number(/try again in ([d.]+)s/i.exec(errText)?.[1]);
+        if (attempt === 0 && wait > 0 && wait <= 6) {
+          await new Promise((r) => setTimeout(r, wait * 1000 + 250));
+          continue;
+        }
+        console.warn(`Groq ${model} rate-limited, trying next model`, errText.slice(0, 200));
+        break;
+      }
+      throw new Error(`Groq API error: ${errText}`);
+    }
+  }
+  throw new GroqBusyError();
+}
+
 async function callGroq(
   model: string,
   systemPrompt: string,
@@ -1139,21 +1184,7 @@ async function callGroq(
       body.parallel_tool_calls = true;
     }
 
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Groq API error: ${errText}`);
-    }
-
-    const data = await res.json();
+    const data = await groqRequest(body, apiKey);
     addUsage(totalUsage, {
       promptTokens: data.usage?.prompt_tokens,
       outputTokens: data.usage?.completion_tokens,
@@ -1294,7 +1325,9 @@ export async function runAgent(
   }
 
   const primary = pickAccount(accounts, accountLabel);
-  const recentHistory = history.slice(-8);
+  // 6 turns keeps follow-ups working while staying inside Groq's free
+  // tokens-per-minute budget.
+  const recentHistory = history.slice(-6);
 
   const [ctx, facts] = await Promise.all([
     buildDayContext(primary, location),
@@ -1307,10 +1340,22 @@ export async function runAgent(
   const useReasoning = needsDeepReasoning(userMessage);
 
   const start = Date.now();
-  const result =
-    provider === "gemini"
-      ? await callGemini(model, systemPrompt, recentHistory, userMessage, tools, env)
-      : await callGroq(model, systemPrompt, recentHistory, userMessage, tools, useReasoning, env);
+  let result: ProviderResult;
+  try {
+    result =
+      provider === "gemini"
+        ? await callGemini(model, systemPrompt, recentHistory, userMessage, tools, env)
+        : await callGroq(model, systemPrompt, recentHistory, userMessage, tools, useReasoning, env);
+  } catch (err) {
+    if (err instanceof GroqBusyError) {
+      return {
+        text: "I'm getting a lot of requests right now and need a few seconds to catch my breath. Try that again in a moment.",
+        cards: [],
+        suggestions: [userMessage.slice(0, 60)],
+      };
+    }
+    throw err;
+  }
   const latencyMs = Date.now() - start;
 
   // Usage logging must never cost Shina her answer.
@@ -1415,10 +1460,8 @@ async function completeWithModel(model: string, prompt: string, maxTokens: numbe
       console.error("completeText: missing GROQ_API_KEY");
       return null;
     }
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
+    const data = await groqRequest(
+      {
         model,
         messages: [{ role: "user", content: prompt }],
         // GPT-OSS is a reasoning model -- even with include_reasoning:false
@@ -1429,13 +1472,9 @@ async function completeWithModel(model: string, prompt: string, maxTokens: numbe
         max_tokens: maxTokens + 800,
         reasoning_effort: "low",
         include_reasoning: false,
-      }),
-    });
-    if (!res.ok) {
-      console.error("completeText: Groq API error", res.status, await res.text());
-      return null;
-    }
-    const data = await res.json();
+      },
+      apiKey
+    );
     await log({
       promptTokens: data.usage?.prompt_tokens,
       outputTokens: data.usage?.completion_tokens,

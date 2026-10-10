@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import AddEventForm from "../AddEventForm";
 import DatePicker from "../DatePicker";
 import PriorityPill from "./Priority";
-import { BellIcon, ChevronDownIcon, VideoIcon } from "../Icons";
+import { BellIcon, VideoIcon } from "../Icons";
+import { useHoldToReorder } from "./useHoldToReorder";
 
 export type ScheduleEvent = {
   id: string;
@@ -61,7 +62,7 @@ export default function ScheduleManager({
   bare?: boolean;
 }) {
   const [selectedDate, setSelectedDate] = useState(todayISO());
-  const [sortBy, setSortBy] = useState<"time" | "priority" | "custom">("time");
+  const [sortBy, setSortBy] = useState<"time" | "priority">("time");
   const [reorderError, setReorderError] = useState<string | null>(null);
   const [events, setEvents] = useState<ScheduleEvent[]>([]);
   const [calEvents, setCalEvents] = useState<CalEvent[]>([]);
@@ -128,25 +129,36 @@ export default function ScheduleManager({
     reload();
   }
 
-  // Custom order: swap with the neighbour, show it immediately, then save.
-  async function move(index: number, delta: -1 | 1) {
-    const target = index + delta;
-    if (target < 0 || target >= events.length) return;
-    const next = [...events];
-    [next[index], next[target]] = [next[target], next[index]];
-    setEvents(next);
-    setReorderError(null);
-    const res = await fetch("/api/schedule/reorder", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ date: selectedDate, ids: next.map((e) => e.id) }),
+  // Hold-to-drag ordering for items with no time (timed items are ordered
+  // by their time). Only in Time sort, where untimed items follow your order.
+  const canReorder = sortBy === "time";
+  const untimedIds = useMemo(() => events.filter((e) => !e.start_time).map((e) => e.id), [events]);
+
+  const previewOrder = useCallback((orderedIds: string[]) => {
+    setEvents((prev) => {
+      const byId = new Map(prev.map((e) => [e.id, e]));
+      return [...prev.filter((e) => e.start_time), ...orderedIds.map((id) => byId.get(id)!).filter(Boolean)];
     });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      setReorderError(data.error ?? "Couldn't save that order.");
-      setLocalKey((k) => k + 1);
-    }
-  }
+  }, []);
+
+  const saveOrder = useCallback(
+    async (orderedIds: string[]) => {
+      setReorderError(null);
+      const res = await fetch("/api/schedule/reorder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: selectedDate, ids: orderedIds }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setReorderError(data.error ?? "Couldn't save that order.");
+        setLocalKey((k) => k + 1);
+      }
+    },
+    [selectedDate]
+  );
+
+  const { draggingId, bind } = useHoldToReorder({ ids: untimedIds, onPreview: previewOrder, onDrop: saveOrder });
 
   async function bulkAction(action: "clear" | "unclear") {
     setBulkLoading(true);
@@ -190,7 +202,7 @@ export default function ScheduleManager({
         )}
         <div className="flex gap-1.5 ml-auto items-center" role="group" aria-label="Sort schedule">
           <span className="text-muted mr-1">Sort</span>
-          {(["time", "priority", "custom"] as const).map((opt) => (
+          {(["time", "priority"] as const).map((opt) => (
             <button
               key={opt}
               onClick={() => setSortBy(opt)}
@@ -206,8 +218,8 @@ export default function ScheduleManager({
       </div>
 
       {reorderError && <p className="text-[13px] text-ember">{reorderError}</p>}
-      {sortBy === "custom" && !reorderError && events.length > 1 && (
-        <p className="text-xs text-muted">Use the arrows to set your order. Repeating items keep it on future days.</p>
+      {canReorder && !reorderError && untimedIds.length > 1 && (
+        <p className="text-xs text-muted">Hold an item without a time, then drag to reorder it.</p>
       )}
 
       <div className="flex flex-col overflow-y-auto min-h-0 -mx-1 px-1">
@@ -239,12 +251,19 @@ export default function ScheduleManager({
                 )}
               </div>
             ))}
-            {events.map((e, index) => {
+            {events.map((e) => {
               const recurring = !!e.recurrence && e.recurrence !== "none";
+              const draggable = canReorder && !e.start_time;
+              const held = draggingId === e.id;
               return (
                 <div
                   key={e.id}
-                  className={`group py-3 border-b border-line last:border-b-0 ${e.cleared ? "opacity-40" : ""}`}
+                  {...(draggable ? bind(e.id) : {})}
+                  className={`group py-3 border-b border-line last:border-b-0 transition-[background-color,box-shadow,transform] ${
+                    e.cleared ? "opacity-40" : ""
+                  } ${draggable ? "select-none [-webkit-touch-callout:none]" : ""} ${
+                    held ? "relative z-10 -mx-3 px-3 rounded-2xl bg-raised border-transparent shadow-xl shadow-black/50 ring-1 ring-honey scale-[1.02]" : ""
+                  }`}
                 >
                   <div className="flex gap-4 items-center">
                     <label className="flex items-center gap-4 flex-1 min-w-0 cursor-pointer">
@@ -266,26 +285,7 @@ export default function ScheduleManager({
                       </span>
                     </label>
                     {e.done ? <span className="text-xs text-muted">Done</span> : <PriorityPill priority={e.priority} />}
-                    {sortBy === "custom" && (
-                      <span className="flex gap-1 shrink-0">
-                        <button
-                          onClick={() => move(index, -1)}
-                          disabled={index === 0}
-                          aria-label={`Move ${e.title} up`}
-                          className="w-8 h-8 rounded-lg border border-line-strong flex items-center justify-center text-soft hover:text-honey disabled:opacity-30"
-                        >
-                          <ChevronDownIcon size={16} className="rotate-180" />
-                        </button>
-                        <button
-                          onClick={() => move(index, 1)}
-                          disabled={index === events.length - 1}
-                          aria-label={`Move ${e.title} down`}
-                          className="w-8 h-8 rounded-lg border border-line-strong flex items-center justify-center text-soft hover:text-honey disabled:opacity-30"
-                        >
-                          <ChevronDownIcon size={16} />
-                        </button>
-                      </span>
-                    )}
+
                   </div>
                   <div className="flex gap-3 mt-1.5 ml-16 text-xs text-muted items-center flex-wrap">
                     {e.end_time && <span className="font-mono">until {e.end_time.slice(0, 5)}</span>}

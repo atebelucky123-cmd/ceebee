@@ -98,7 +98,7 @@ export function describeDayContext(ctx: DayContext, accounts: GoogleAccount[]): 
   lines.push(
     open.length
       ? open
-          .slice(0, 15)
+          .slice(0, 10)
           .map((t) => `- ${t.title}${t.due_date ? ` (due ${t.due_date}${t.due_date < ctx.dateKey ? ", OVERDUE" : ""})` : ""} id=${t.id}`)
           .join("\n")
       : "- none"
