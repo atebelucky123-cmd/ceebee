@@ -32,7 +32,7 @@ let generation = 0;
 // app unlocks it too, so auto-voice replies also work on iPhone.
 
 let player: HTMLAudioElement | null = null;
-let unlocked = false;
+let silentUrl: string | null = null;
 
 function silentWavUrl(): string {
   const sampleRate = 8000;
@@ -64,16 +64,16 @@ function getPlayer(): HTMLAudioElement {
   return player;
 }
 
-// Must be called synchronously from a tap/click handler.
+// Must be called synchronously from a tap/click handler. Runs on every tap
+// (not just the first) so the player is always freshly unlocked and holds
+// only silence until the real voice arrives.
 export function unlockAudio() {
-  if (typeof window === "undefined" || unlocked) return;
+  if (typeof window === "undefined") return;
   const p = getPlayer();
-  p.src = silentWavUrl();
-  p.play()
-    .then(() => {
-      unlocked = true;
-    })
-    .catch(() => {});
+  silentUrl ??= silentWavUrl();
+  p.src = silentUrl;
+  p.load();
+  p.play().catch(() => {});
   // The browser voice (fallback) has the same rule on iOS.
   try {
     window.speechSynthesis?.speak(new SpeechSynthesisUtterance(""));
@@ -129,7 +129,15 @@ export function stopSpeaking() {
   generation++;
   currentRequest?.abort();
   currentRequest = null;
-  if (player) player.pause();
+  // Fully empty the player, not just pause it: iPhone Safari can otherwise
+  // replay the previous recording (e.g. a voice preview) when the player is
+  // next given a new one.
+  if (player) {
+    player.pause();
+    player.onended = null;
+    player.removeAttribute("src");
+    player.load();
+  }
   if (currentUrl) {
     URL.revokeObjectURL(currentUrl);
     currentUrl = null;
@@ -189,6 +197,7 @@ export async function speakNatural(text: string, voice: string | null = getVoice
       if (myGeneration === generation) stopSpeaking();
     };
     audio.src = url;
+    audio.load();
     await audio.play();
   } catch (err) {
     if (myGeneration !== generation || (err instanceof DOMException && err.name === "AbortError")) return;
