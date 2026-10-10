@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import DatePicker from "../components/DatePicker";
 
 type ScheduleEvent = {
@@ -54,14 +53,8 @@ export default function RemindersPage() {
 
   return (
     <div className="flex flex-col flex-1 min-h-0 w-full">
-      <header className="px-4 py-3 border-b border-neutral-800 flex items-center gap-3">
-        <Link
-          href="/dashboard"
-          className="bg-amber-400 text-neutral-950 text-xs font-medium px-3 py-1.5 rounded-full"
-        >
-          Back
-        </Link>
-        <h1 className="font-semibold text-lg">Reminders</h1>
+      <header className="px-4 pt-[max(1.75rem,env(safe-area-inset-top))] lg:pt-9 pb-3 flex items-center gap-3">
+        <h1 className="font-display font-extrabold text-[32px] lg:text-[40px] tracking-tight leading-none flex-1">Reminders</h1>
       </header>
 
       <main className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-3">

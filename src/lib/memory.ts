@@ -30,8 +30,14 @@ export async function getRelevantMemoryFacts(
     words.some((w) => row.fact.toLowerCase().includes(w))
   );
 
-  const chosen = matched.length > 0 ? matched : rows.slice(0, 3);
-  return chosen.slice(0, limit).map((r) => r.fact);
+  // Identity-level facts (highest importance) always ride along, matched
+  // facts fill the rest -- previously the top facts only appeared when
+  // nothing matched, so "book dinner with Tolu" could surface a stray
+  // keyword hit but lose "Tolu is vegetarian".
+  const core = rows.filter((r) => (r.importance ?? 3) >= 4).slice(0, 4);
+  const chosen = [...core, ...matched, ...rows.slice(0, 3)];
+  const unique = Array.from(new Set(chosen.map((r) => r.fact)));
+  return unique.slice(0, limit);
 }
 
 export async function addMemoryFact(

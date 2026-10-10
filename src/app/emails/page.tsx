@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 
 type Email = {
   id: string;
@@ -18,16 +18,51 @@ type Email = {
 
 type Account = { email: string; label: string };
 
+type Summary = {
+  unread: number;
+  summary: string;
+  focus: { id: string; accountLabel: string; from: string; subject: string; action: string } | null;
+};
+
 function extractEmailAddress(from: string) {
   const match = from.match(/<(.+)>/);
   return match ? match[1] : from;
 }
 
-export default function EmailsPage() {
+function senderName(from: string) {
+  return from.replace(/<.*>/, "").replace(/"/g, "").trim() || extractEmailAddress(from);
+}
+
+function initials(name: string) {
+  const parts = name.replace(/[^\p{L}\s]/gu, "").trim().split(/\s+/);
+  return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase() || "?";
+}
+
+// 10:42 today, "Sun" this week, "12 Sep" before that.
+function shortWhen(dateStr: string) {
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return "";
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) {
+    return d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  }
+  if (now.getTime() - d.getTime() < 6 * 24 * 60 * 60 * 1000) {
+    return d.toLocaleDateString("en-GB", { weekday: "short" });
+  }
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
+
+export default function InboxPage() {
+  const router = useRouter();
   const [emails, setEmails] = useState<Email[]>([]);
+  // Which account filter the on-screen emails/summary belong to; loading is
+  // derived from it rather than toggled inside the fetch effect.
+  const [loadedFilter, setLoadedFilter] = useState<string | null | undefined>(undefined);
+  const [summaryState, setSummaryState] = useState<{ filter: string | null; data: Summary } | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [filter, setFilter] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const loading = loadedFilter !== filter;
+  const summary = summaryState?.filter === filter ? summaryState.data : null;
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [fullBody, setFullBody] = useState<string | null>(null);
   const [bodyLoading, setBodyLoading] = useState(false);
@@ -41,28 +76,40 @@ export default function EmailsPage() {
     fetch("/api/accounts")
       .then((r) => r.json())
       .then((data) => setAccounts(data.accounts ?? []));
-
-    // Unfiltered fetch, purely to compute unread counts per account tab --
-    // independent of whichever filter is currently displayed.
-    fetch("/api/emails")
-      .then((r) => r.json())
-      .then((data) => {
-        const counts: Record<string, number> = {};
-        for (const e of data.emails ?? []) {
-          if (e.unread) counts[e.accountLabel] = (counts[e.accountLabel] ?? 0) + 1;
-        }
-        setCountsByLabel(counts);
-      });
   }, []);
 
   useEffect(() => {
-    setLoading(true);
-    const params = filter ? `?label=${filter}` : "";
+    const params = filter ? `?label=${encodeURIComponent(filter)}` : "";
     fetch(`/api/emails${params}`)
       .then((r) => r.json())
-      .then((data) => setEmails(data.emails ?? []))
-      .finally(() => setLoading(false));
+      .then((data) => {
+        const list: Email[] = data.emails ?? [];
+        setEmails(list);
+        // Per-account unread counts come from the unfiltered list.
+        if (!filter) {
+          const counts: Record<string, number> = {};
+          for (const e of list) if (e.unread) counts[e.accountLabel] = (counts[e.accountLabel] ?? 0) + 1;
+          setCountsByLabel(counts);
+        }
+      })
+      .catch(() => setEmails([]))
+      .finally(() => setLoadedFilter(filter));
+    fetch(`/api/inbox/summary${params}`)
+      .then((r) => r.json())
+      .then((d) => !d.error && setSummaryState({ filter, data: d }))
+      .catch(() => {});
   }, [filter]);
+
+  const totalUnread = useMemo(() => Object.values(countsByLabel).reduce((a, b) => a + b, 0), [countsByLabel]);
+
+  function markReadLocally(email: Email) {
+    if (!email.unread) return;
+    setEmails((prev) => prev.map((e) => (e.id === email.id ? { ...e, unread: false } : e)));
+    setCountsByLabel((prev) => ({
+      ...prev,
+      [email.accountLabel]: Math.max((prev[email.accountLabel] ?? 1) - 1, 0),
+    }));
+  }
 
   async function toggleExpand(email: Email) {
     if (expandedId === email.id) {
@@ -73,33 +120,15 @@ export default function EmailsPage() {
     setExpandedId(email.id);
     setFullBody(null);
     setBodyLoading(true);
-
-    // Optimistic: opening it counts as read immediately in the UI, the
-    // server call below makes it official on Gmail's side.
-    setEmails((prev) =>
-      prev.map((e) => (e.id === email.id ? { ...e, unread: false } : e))
-    );
-    if (email.unread) {
-      setCountsByLabel((prev) => ({
-        ...prev,
-        [email.accountLabel]: Math.max((prev[email.accountLabel] ?? 1) - 1, 0),
-      }));
-    }
-
+    // Opening counts as read immediately; the API call makes it official.
+    markReadLocally(email);
     try {
-      const res = await fetch(
-        `/api/emails/${email.id}?accountLabel=${email.accountLabel}`
-      );
+      const res = await fetch(`/api/emails/${email.id}?accountLabel=${encodeURIComponent(email.accountLabel)}`);
       const data = await res.json();
       setFullBody(data.body ?? "(Couldn't load body)");
     } finally {
       setBodyLoading(false);
     }
-  }
-
-  function openReply(email: Email) {
-    setReplyingTo(email.id);
-    setReplyText("");
   }
 
   async function sendReply(email: Email) {
@@ -121,15 +150,7 @@ export default function EmailsPage() {
       });
       if (res.ok) {
         setSentIds((prev) => new Set(prev).add(email.id));
-        setEmails((prev) =>
-          prev.map((e) => (e.id === email.id ? { ...e, unread: false } : e))
-        );
-        if (email.unread) {
-          setCountsByLabel((prev) => ({
-            ...prev,
-            [email.accountLabel]: Math.max((prev[email.accountLabel] ?? 1) - 1, 0),
-          }));
-        }
+        markReadLocally(email);
         setReplyingTo(null);
       }
     } finally {
@@ -137,155 +158,170 @@ export default function EmailsPage() {
     }
   }
 
-  return (
-    <div className="flex flex-col flex-1 min-h-0 w-full">
-      <header className="px-4 py-3 border-b border-neutral-800 flex items-center gap-3">
-        <Link
-          href="/dashboard"
-          className="bg-amber-400 text-neutral-950 text-xs font-medium px-3 py-1.5 rounded-full"
-        >
-          Back
-        </Link>
-        <h1 className="font-semibold text-lg">Emails</h1>
-      </header>
+  function askCeeBee(prompt: string) {
+    router.push(`/chat?q=${encodeURIComponent(prompt)}`);
+  }
 
-      <main className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-3">
-        {accounts.length > 1 && (
-          <div className="flex gap-2 overflow-x-auto pb-1 text-xs">
-            <button
-              onClick={() => setFilter(null)}
-              className={`px-3 py-1.5 rounded-full whitespace-nowrap flex items-center gap-1.5 ${
-                filter === null
-                  ? "bg-amber-400 text-neutral-950"
-                  : "bg-neutral-900 text-neutral-400"
-              }`}
-            >
-              All accounts
-              {Object.values(countsByLabel).reduce((a, b) => a + b, 0) > 0 && (
-                <span className="bg-neutral-950/20 rounded-full min-w-[16px] h-4 px-1 flex items-center justify-center text-[10px] font-semibold">
-                  {Object.values(countsByLabel).reduce((a, b) => a + b, 0)}
-                </span>
-              )}
-            </button>
-            {accounts.map((a) => (
-              <button
-                key={a.label}
-                onClick={() => setFilter(a.label)}
-                className={`px-3 py-1.5 rounded-full whitespace-nowrap capitalize flex items-center gap-1.5 ${
-                  filter === a.label
-                    ? "bg-amber-400 text-neutral-950"
-                    : "bg-neutral-900 text-neutral-400"
-                }`}
+  function draftPrompt(e: { id: string; from: string; subject: string; accountLabel: string }) {
+    return `Draft a reply to ${senderName(e.from)}'s email "${e.subject}" (email id ${e.id}, ${e.accountLabel} account). Read it first.`;
+  }
+
+  return (
+    <div className="flex flex-col flex-1 min-h-0">
+      <main className="flex-1 min-h-0 overflow-y-auto px-5 lg:px-10 pt-[max(1.75rem,env(safe-area-inset-top))] lg:pt-9 pb-6 flex flex-col gap-4">
+        <div className="flex justify-between items-center gap-3">
+          <h1 className="m-0 font-display font-extrabold text-[32px] lg:text-[44px] tracking-tight">Inbox</h1>
+          {accounts.length > 1 && (
+            <label className="relative">
+              <span className="sr-only">Account</span>
+              <select
+                value={filter ?? ""}
+                onChange={(e) => setFilter(e.target.value || null)}
+                className="appearance-none h-9 pl-3 pr-8 rounded-full border border-line-strong bg-surface text-[13px] font-semibold outline-none focus:border-honey"
               >
-                {a.label}
-                {!!countsByLabel[a.label] && (
-                  <span className="bg-amber-400/90 text-neutral-950 rounded-full min-w-[16px] h-4 px-1 flex items-center justify-center text-[10px] font-semibold">
-                    {countsByLabel[a.label]}
-                  </span>
-                )}
-              </button>
-            ))}
+                <option value="">All accounts{totalUnread ? ` (${totalUnread})` : ""}</option>
+                {accounts.map((a) => (
+                  <option key={a.label} value={a.label}>
+                    {a.label}
+                    {countsByLabel[a.label] ? ` (${countsByLabel[a.label]})` : ""}
+                  </option>
+                ))}
+              </select>
+              <span aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted text-xs">
+                ▾
+              </span>
+            </label>
+          )}
+        </div>
+
+        {/* CeeBee's triage */}
+        <div className="p-4 rounded-[18px] bg-surface border border-line-strong flex flex-col gap-2.5">
+          <div className="flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full bg-honey ${summary ? "" : "animate-pulse"}`} />
+            <span className="text-xs font-bold tracking-[0.06em] text-honey">CEEBEE&apos;S SUMMARY</span>
           </div>
-        )}
+          <div className="text-[15px] leading-normal">
+            {summary ? summary.summary : <span className="text-muted">Reading your inbox…</span>}
+          </div>
+          {summary?.focus && (
+            <button onClick={() => askCeeBee(draftPrompt(summary.focus!))} className="self-start text-sm font-bold text-honey hover:text-honey-hover">
+              {summary.focus.action}
+            </button>
+          )}
+        </div>
 
         {loading ? (
-          <div className="text-neutral-500 text-sm text-center py-8">
-            Loading…
+          <div className="flex flex-col gap-3">
+            {[0, 1, 2, 3].map((i) => (
+              <div key={i} className="h-16 rounded-xl bg-surface animate-pulse" />
+            ))}
           </div>
         ) : emails.length === 0 ? (
-          <div className="text-neutral-500 text-sm text-center py-8">
-            No emails found. Connect a Google account first.
-          </div>
+          <div className="text-muted text-sm text-center py-8">No emails here. Connect a Google account on the Accounts page.</div>
         ) : (
-          <div className="space-y-2">
-            {emails.map((e) => (
-              <div
-                key={`${e.accountEmail}-${e.id}`}
-                className="bg-neutral-900 rounded-xl px-4 py-3"
-              >
-                <button
-                  onClick={() => toggleExpand(e)}
-                  className="w-full text-left"
-                >
-                  <div className="flex justify-between items-start gap-2">
-                    <span className="text-sm truncate text-neutral-300 flex items-center gap-2">
-                      {e.unread && (
-                        <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
-                      )}
-                      {e.from}
+          <div className="flex flex-col">
+            {emails.map((e, idx) => {
+              const name = senderName(e.from);
+              const isFocus = summary?.focus?.id === e.id;
+              const expanded = expandedId === e.id;
+              return (
+                <div key={`${e.accountEmail}-${e.id}`} className={idx < emails.length - 1 ? "border-b border-line" : ""}>
+                  <button onClick={() => toggleExpand(e)} aria-expanded={expanded} className="w-full text-left flex gap-3 py-3.5">
+                    <span
+                      className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center font-bold text-sm ${
+                        isFocus ? "bg-honey text-ground" : e.unread ? "bg-chip" : "bg-raised text-soft"
+                      }`}
+                      aria-hidden="true"
+                    >
+                      {initials(name)}
                     </span>
-                    <span className="text-[10px] text-neutral-600 shrink-0 capitalize">
-                      {e.accountLabel}
+                    <span className="flex flex-col gap-0.5 flex-1 min-w-0">
+                      <span className="flex justify-between gap-2">
+                        <span className={`text-[15px] truncate ${e.unread ? "font-bold" : "font-medium text-soft"}`}>{name}</span>
+                        <span className={`font-mono text-xs shrink-0 ${e.unread ? "text-honey" : "text-muted"}`}>{shortWhen(e.date)}</span>
+                      </span>
+                      <span className={`text-sm truncate ${e.unread ? "font-semibold" : ""}`}>{e.subject || "(No subject)"}</span>
+                      <span className="text-[13px] text-muted truncate">
+                        {accounts.length > 1 && <span className="capitalize">{e.accountLabel} · </span>}
+                        {e.snippet}
+                      </span>
                     </span>
-                  </div>
-                  <div className="text-sm mt-0.5">{e.subject}</div>
-                  <p className="text-xs text-neutral-500 mt-1 line-clamp-1">
-                    {e.snippet}
-                  </p>
-                </button>
+                  </button>
 
-                {expandedId === e.id && (
-                  <div className="mt-3 pt-3 border-t border-neutral-800">
-                    {bodyLoading ? (
-                      <p className="text-xs text-neutral-500">Loading full email…</p>
-                    ) : (
-                      <>
-                        <p className="text-sm text-neutral-300 whitespace-pre-wrap">
-                          {fullBody}
-                        </p>
+                  {expanded && (
+                    <div className="pb-4 pl-[52px] flex flex-col gap-3">
+                      {bodyLoading ? (
+                        <div className="h-20 rounded-xl bg-surface animate-pulse" />
+                      ) : (
+                        <p className="text-sm text-soft whitespace-pre-wrap leading-relaxed max-h-96 overflow-y-auto">{fullBody}</p>
+                      )}
+                      <div className="flex gap-2 flex-wrap items-center">
+                        <button
+                          onClick={() => askCeeBee(draftPrompt(e))}
+                          className="h-9 px-3.5 rounded-[10px] bg-honey text-ground text-[13px] font-semibold"
+                        >
+                          Ask CeeBee to reply
+                        </button>
+                        <button
+                          onClick={() => askCeeBee(`Summarise ${name}'s email "${e.subject}" (email id ${e.id}, ${e.accountLabel} account) and tell me if I need to do anything.`)}
+                          className="h-9 px-3.5 rounded-[10px] border border-outline text-[13px] font-semibold"
+                        >
+                          Summarise
+                        </button>
+                        {!sentIds.has(e.id) && replyingTo !== e.id && (
+                          <button
+                            onClick={() => {
+                              setReplyingTo(e.id);
+                              setReplyText("");
+                            }}
+                            className="h-9 px-3.5 rounded-[10px] border border-outline text-[13px] font-semibold"
+                          >
+                            Reply myself
+                          </button>
+                        )}
                         <a
-                          href={`https://mail.google.com/mail/?authuser=${encodeURIComponent(
-                            e.accountEmail
-                          )}#all/${e.threadId}`}
+                          href={`https://mail.google.com/mail/?authuser=${encodeURIComponent(e.accountEmail)}#all/${e.threadId}`}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="text-amber-400 text-xs underline mt-2 inline-block"
+                          className="text-[13px] font-semibold text-muted hover:text-honey ml-auto"
                         >
-                          Go to Gmail
+                          Open in Gmail
                         </a>
-                      </>
-                    )}
-                  </div>
-                )}
-
-                {sentIds.has(e.id) ? (
-                  <p className="text-xs text-amber-400 mt-2">Reply sent.</p>
-                ) : replyingTo === e.id ? (
-                  <div className="mt-2 space-y-2">
-                    <textarea
-                      value={replyText}
-                      onChange={(ev) => setReplyText(ev.target.value)}
-                      placeholder="Write your reply…"
-                      rows={3}
-                      autoFocus
-                      className="w-full bg-neutral-800 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400 resize-none"
-                    />
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => sendReply(e)}
-                        disabled={sending}
-                        className="bg-amber-400 text-neutral-950 text-xs font-medium px-4 py-1.5 rounded-full disabled:opacity-50"
-                      >
-                        {sending ? "Sending…" : "Send"}
-                      </button>
-                      <button
-                        onClick={() => setReplyingTo(null)}
-                        className="bg-neutral-800 text-neutral-300 text-xs px-4 py-1.5 rounded-full"
-                      >
-                        Cancel
-                      </button>
+                      </div>
+                      {sentIds.has(e.id) && <p className="text-[13px] text-honey font-semibold">Reply sent.</p>}
+                      {replyingTo === e.id && (
+                        <div className="flex flex-col gap-2">
+                          <label htmlFor={`reply-${e.id}`} className="sr-only">
+                            Your reply
+                          </label>
+                          <textarea
+                            id={`reply-${e.id}`}
+                            value={replyText}
+                            onChange={(ev) => setReplyText(ev.target.value)}
+                            placeholder="Write your reply…"
+                            rows={4}
+                            autoFocus
+                            className="w-full bg-raised border border-line-strong rounded-xl px-3 py-2 text-sm outline-none focus:border-honey resize-y"
+                          />
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => sendReply(e)}
+                              disabled={sending || !replyText.trim()}
+                              className="h-9 px-4 rounded-[10px] bg-honey text-ground text-[13px] font-semibold disabled:opacity-50"
+                            >
+                              {sending ? "Sending…" : "Send"}
+                            </button>
+                            <button onClick={() => setReplyingTo(null)} className="h-9 px-4 rounded-[10px] border border-outline text-[13px] font-semibold">
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => openReply(e)}
-                    className="text-amber-400 text-xs font-medium mt-2"
-                  >
-                    Reply
-                  </button>
-                )}
-              </div>
-            ))}
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </main>

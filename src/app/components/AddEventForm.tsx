@@ -6,6 +6,7 @@ import DatePicker from "./DatePicker";
 
 const REMIND_OPTIONS = [
   { label: "Don't remind me", value: "" },
+  { label: "At start time", value: "0" },
   { label: "5 minutes before", value: "5" },
   { label: "10 minutes before", value: "10" },
   { label: "30 minutes before", value: "30" },
@@ -46,7 +47,11 @@ export default function AddEventForm({
   const [generatingLink, setGeneratingLink] = useState(false);
   const [priority, setPriority] = useState(editingEvent?.priority ?? 3);
   const [remindBefore, setRemindBefore] = useState(
-    editingEvent?.remind_before_minutes ? String(editingEvent.remind_before_minutes) : ""
+    // 0 ("at start time") is a real reminder -- a truthy check here used to
+    // turn it into "Don't remind me" on edit, deleting it on save.
+    editingEvent?.remind_before_minutes !== null && editingEvent?.remind_before_minutes !== undefined
+      ? String(editingEvent.remind_before_minutes)
+      : ""
   );
   const [recurrence, setRecurrence] = useState<Recurrence>(editingEvent?.recurrence ?? "none");
   const [recurrenceDays, setRecurrenceDays] = useState<number[]>(editingEvent?.recurrence_days ?? []);
@@ -103,7 +108,7 @@ export default function AddEventForm({
       end_time: endTime || null,
       meeting_link: meetingLink || null,
       priority,
-      remind_before_minutes: remindBefore ? Number(remindBefore) : null,
+      remind_before_minutes: remindBefore !== "" ? Number(remindBefore) : null,
       recurrence,
       recurrence_days: recurrence === "custom" ? recurrenceDays : null,
     };

@@ -13,13 +13,36 @@ import {
 } from "@/lib/schedule";
 import { createTask, listTasks, updateTask, deleteTask } from "@/lib/tasks";
 import { createNote, listNotes, updateNote, deleteNote } from "@/lib/notes";
-import { listRecentEmails, sendEmail } from "@/lib/gmail";
-import { fetchWeather } from "@/lib/weather";
+import { listRecentEmails, getFullEmailBody, getEmailMeta } from "@/lib/gmail";
+import { getAgenda, getWeatherCached } from "@/lib/agenda";
+import { buildDayContext, describeDayContext, type DayContext } from "@/lib/context";
 import { getRelevantMemoryFacts, addMemoryFact } from "@/lib/memory";
 import { checkRateLimit } from "@/lib/rateLimit";
 import { logUsage } from "@/lib/usageLog";
 import { getCurrentModel, providerForModel } from "@/lib/settings";
-import { todayLagosDateKey } from "@/lib/dateUtils";
+import { pickAccount, type GoogleAccount } from "@/lib/accounts";
+import { labelForKey, lagosParts, toMinutes } from "@/lib/time";
+import { cardsDigest, type AgentReply, type Card, type AgendaCardItem } from "@/lib/cards";
+import type { FullWeatherData } from "@/lib/weather";
+
+// =========================================================================
+// CeeBee v2 ("Hive") agent.
+//
+// What changed from v1, and why:
+//  - She knows the day before you ask. A live snapshot of today/tomorrow
+//    (Schedule + Calendar merged), open tasks, forecast and noticed clashes
+//    is in every system prompt, with real ids -- so she can answer and act
+//    without a lookup round-trip.
+//  - Her own words survive. v1 discarded the model's reply whenever a tool
+//    ran and printed canned "Done --" lines instead; now she says what she
+//    did and offers the next step (the Hive brand voice), while *proof*
+//    of what happened comes from cards built only from real tool results.
+//  - Tappable next steps. She ends with up to 3 suggestion chips.
+//  - She drafts, you send. send_email is gone from her toolset; draft_email
+//    produces a card with Send/Edit, and only Shina's tap sends it.
+//  - Follow-ups work. "Yes, move it" has no keywords, so short follow-ups
+//    inherit the tool set of the turn before.
+// =========================================================================
 
 // --- Neutral tool schema -------------------------------------------------
 // Defined once in plain JSON-schema shape (lowercase types), then adapted
@@ -60,6 +83,20 @@ function markOptionalNullable(tool: NeutralTool): NeutralTool {
 
 const RAW_TOOLS: NeutralTool[] = [
   {
+    name: "show_schedule",
+    description:
+      "Shows Shina a card of everything on a day -- her Schedule and Google Calendar merged, in time order, with rain warnings. Call this whenever she asks what's on, what her day/morning/afternoon/evening looks like, or what she has on a date, so she sees the list rather than just reading about it. Use from_time/to_time to narrow to part of a day (afternoon = 12:00-17:59, evening = 17:00-23:59, morning = 00:00-11:59).",
+    parameters: {
+      type: "object",
+      properties: {
+        date: { type: "string", description: "YYYY-MM-DD" },
+        from_time: { type: "string", description: "HH:MM, optional" },
+        to_time: { type: "string", description: "HH:MM, optional" },
+      },
+      required: ["date"],
+    },
+  },
+  {
     name: "create_calendar_event",
     description:
       "Creates a new event on Shina's Google Calendar, optionally with a Google Meet link and attendees. Only use this for actual calendar meetings/appointments -- when Shina explicitly says 'calendar', wants a Meet link, or wants to invite other people. For anything she just wants tracked on her personal day list (a priority, a reminder, a routine), use create_schedule_event instead. For a plain checkbox to-do with no time attached, use create_task.",
@@ -68,8 +105,8 @@ const RAW_TOOLS: NeutralTool[] = [
       properties: {
         title: { type: "string" },
         description: { type: "string" },
-        startTime: { type: "string", description: "ISO 8601 datetime, e.g. 2026-09-02T15:00:00+01:00" },
-        endTime: { type: "string", description: "ISO 8601 datetime" },
+        startTime: { type: "string", description: "ISO 8601 datetime with offset, e.g. 2026-09-02T15:00:00+01:00" },
+        endTime: { type: "string", description: "ISO 8601 datetime with offset" },
         attendeeEmails: { type: "array", items: { type: "string" } },
         createMeetLink: { type: "boolean" },
       },
@@ -78,7 +115,7 @@ const RAW_TOOLS: NeutralTool[] = [
   },
   {
     name: "list_upcoming_events",
-    description: "Lists events on Shina's actual Google Calendar between now and a number of hours ahead, including each event's id. Call this before delete_calendar_event if you don't already know the event's id.",
+    description: "Lists events on Shina's Google Calendar from now to a number of hours ahead, with ids. Today and tomorrow are already in your context -- only call this for further ahead.",
     parameters: {
       type: "object",
       properties: { hoursAhead: { type: "number" } },
@@ -86,7 +123,7 @@ const RAW_TOOLS: NeutralTool[] = [
   },
   {
     name: "delete_calendar_event",
-    description: "Deletes an event from Shina's Google Calendar. Requires its id -- if you don't already have it from an earlier list_upcoming_events call in this conversation, call list_upcoming_events first to find the matching event by title/time.",
+    description: "Deletes an event from Shina's Google Calendar by id (ids for today/tomorrow are in your context).",
     parameters: {
       type: "object",
       properties: { eventId: { type: "string" } },
@@ -95,15 +132,15 @@ const RAW_TOOLS: NeutralTool[] = [
   },
   {
     name: "update_calendar_event",
-    description: "Edits an existing Google Calendar event's title, description, or time. Requires its id -- if you don't already have it, call list_upcoming_events first to find the matching event by title/time. Only pass the fields that are actually changing.",
+    description: "Edits an existing Google Calendar event's title, description, or time, by id. Only pass the fields that are actually changing.",
     parameters: {
       type: "object",
       properties: {
         eventId: { type: "string" },
         title: { type: "string" },
         description: { type: "string" },
-        startTime: { type: "string", description: "ISO 8601 datetime" },
-        endTime: { type: "string", description: "ISO 8601 datetime" },
+        startTime: { type: "string", description: "ISO 8601 datetime with offset" },
+        endTime: { type: "string", description: "ISO 8601 datetime with offset" },
       },
       required: ["eventId"],
     },
@@ -111,7 +148,7 @@ const RAW_TOOLS: NeutralTool[] = [
   {
     name: "create_schedule_event",
     description:
-      "Adds an item to Shina's personal Schedule -- the day list on her dashboard, separate from Google Calendar. This is the default whenever she says 'schedule', gives something a priority level or reminder, or describes something that repeats every day/weekday/weekend. If she lists several items in one message, call this tool once per item, in the same turn -- carry over each item's own priority/time/reminder exactly as she stated them.",
+      "Adds an item to Shina's personal Schedule -- the day list on her Today screen, separate from Google Calendar. This is the default whenever she says 'schedule', gives something a priority level, or describes something that repeats every day/weekday/weekend. If she lists several items in one message, call this tool once per item, in the same turn -- carry over each item's own priority/time/reminder exactly as she stated them.",
     parameters: {
       type: "object",
       properties: {
@@ -120,7 +157,7 @@ const RAW_TOOLS: NeutralTool[] = [
         event_date: { type: "string", description: "YYYY-MM-DD, the date of the first (or only) occurrence" },
         start_time: { type: "string", description: "HH:MM, 24-hour, optional" },
         end_time: { type: "string", description: "HH:MM, 24-hour, optional" },
-        priority: { type: "number", description: "1 (low) to 5 (high). Default 3 if she doesn't say." },
+        priority: { type: "number", description: "1 (low) to 5 (urgent). Default 3 if she doesn't say." },
         remind_before_minutes: {
           type: "number",
           description:
@@ -144,7 +181,7 @@ const RAW_TOOLS: NeutralTool[] = [
   {
     name: "create_reminder",
     description:
-      "Sets a reminder for Shina -- use this instead of create_schedule_event whenever she specifically says 'reminder' or 'remind me', not just 'schedule' or 'add an event'. Under the hood it's the same Schedule item (it'll show up on her Schedule tab too, and on her dedicated Reminders list), but calling this tool directly -- rather than trying to simulate a reminder via create_schedule_event's optional remind_before_minutes field -- is what makes it reliably show up as a reminder rather than an easy-to-miss plain schedule item.",
+      "Sets a reminder for Shina -- use this instead of create_schedule_event whenever she specifically says 'reminder' or 'remind me'. It's the same Schedule item under the hood, but this is what makes it reliably show up on her Reminders list and fire a notification.",
     parameters: {
       type: "object",
       properties: {
@@ -153,7 +190,7 @@ const RAW_TOOLS: NeutralTool[] = [
         start_time: { type: "string", description: "HH:MM, 24-hour -- the time she wants reminded, e.g. '11:00' for 11am." },
         remind_before_minutes: {
           type: "number",
-          description: "Minutes before start_time to notify her -- 5, 10, 30, or 60. If she doesn't say how far in advance, omit this entirely -- it defaults to 0, meaning notify right at start_time, which is what 'remind me at 11am' means.",
+          description: "Minutes before start_time to notify her -- 5, 10, 30, or 60. If she doesn't say how far in advance, omit this entirely -- it defaults to 0, meaning notify right at start_time.",
         },
       },
       required: ["title"],
@@ -161,15 +198,15 @@ const RAW_TOOLS: NeutralTool[] = [
   },
   {
     name: "list_schedule_events",
-    description: "Lists items on Shina's personal Schedule (not Google Calendar) for a given date, including each item's id. Defaults to today if no date is given. Call this before delete_schedule_event if you don't already know the item's id.",
+    description: "Lists items on Shina's personal Schedule for a given date, with ids. Today and tomorrow are already in your context -- only call this for other dates.",
     parameters: {
       type: "object",
-      properties: { date: { type: "string", description: "YYYY-MM-DD, defaults to today" } },
+      properties: { date: { type: "string", description: "YYYY-MM-DD" } },
     },
   },
   {
     name: "delete_schedule_event",
-    description: "Deletes an item from Shina's personal Schedule. Requires its id -- if you don't already have it from an earlier list_schedule_events call in this conversation, call list_schedule_events first to find the matching item by title/date.",
+    description: "Deletes an item from Shina's personal Schedule by id.",
     parameters: {
       type: "object",
       properties: {
@@ -184,7 +221,7 @@ const RAW_TOOLS: NeutralTool[] = [
   },
   {
     name: "update_schedule_event",
-    description: "Edits one existing item on Shina's Schedule -- title, date, time, priority, reminder, or meeting link. Requires its id -- if you don't already have it from earlier in this conversation, call list_schedule_events first to find the matching item by title/date. Only pass the fields that are actually changing.",
+    description: "Edits one existing item on Shina's Schedule -- title, date, time, priority, reminder, or meeting link -- by id. Moving something to another day/time is an update (change event_date and/or start_time/end_time), not a delete + create. Only pass the fields that are actually changing.",
     parameters: {
       type: "object",
       properties: {
@@ -194,7 +231,7 @@ const RAW_TOOLS: NeutralTool[] = [
         event_date: { type: "string", description: "YYYY-MM-DD" },
         start_time: { type: "string", description: "HH:MM, 24-hour" },
         end_time: { type: "string", description: "HH:MM, 24-hour" },
-        priority: { type: "number", description: "1 (low) to 5 (high)." },
+        priority: { type: "number", description: "1 (low) to 5 (urgent)." },
         remind_before_minutes: { type: "number", description: "0 = right at start time." },
         meeting_link: { type: "string" },
       },
@@ -204,7 +241,7 @@ const RAW_TOOLS: NeutralTool[] = [
   {
     name: "create_task",
     description:
-      "Adds a plain checkbox to-do to Shina's Tasks list -- distinct from her Schedule (no priority) and Calendar (no meeting time). Use this when she says 'task' or 'to-do', or just wants something to check off. Pass her wording through exactly as she said it -- do not paraphrase, correct, or reword it.",
+      "Adds a plain checkbox to-do to Shina's Tasks list -- distinct from her Schedule (no priority) and Calendar (no meeting time). Use this when she says 'task' or 'to-do', or just wants something to check off. Pass her wording through exactly as she said it.",
     parameters: {
       type: "object",
       properties: {
@@ -218,12 +255,12 @@ const RAW_TOOLS: NeutralTool[] = [
   },
   {
     name: "list_tasks",
-    description: "Lists everything on Shina's Tasks list, including each task's id and done status. Call this before update_task or delete_task if you don't already know the task's id.",
+    description: "Lists everything on Shina's Tasks list, including done ones. Open tasks are already in your context.",
     parameters: { type: "object", properties: {} },
   },
   {
     name: "update_task",
-    description: "Edits or completes an existing task. Requires its id -- if you don't already have it from earlier in this conversation, call list_tasks first to find the matching one by title. Only pass the fields that are actually changing.",
+    description: "Edits or completes an existing task by id. Only pass the fields that are actually changing.",
     parameters: {
       type: "object",
       properties: {
@@ -239,7 +276,7 @@ const RAW_TOOLS: NeutralTool[] = [
   },
   {
     name: "delete_task",
-    description: "Deletes a task. Requires its id -- if you don't already have it, call list_tasks first to find the matching one by title.",
+    description: "Deletes a task by id.",
     parameters: {
       type: "object",
       properties: { id: { type: "string" } },
@@ -249,7 +286,7 @@ const RAW_TOOLS: NeutralTool[] = [
   {
     name: "create_note",
     description:
-      "Saves a freeform note for Shina -- something she wants written down verbatim, not an action item. Pass her wording through exactly as she said or typed it, typos and all -- never paraphrase, correct, or substitute her own content with different wording.",
+      "Saves a freeform note for Shina -- something she wants written down verbatim, not an action item. Pass her wording through exactly as she said or typed it, typos and all.",
     parameters: {
       type: "object",
       properties: {
@@ -261,12 +298,12 @@ const RAW_TOOLS: NeutralTool[] = [
   },
   {
     name: "list_notes",
-    description: "Lists Shina's saved notes, including each note's id. Call this before update_note or delete_note if you don't already know the note's id.",
+    description: "Lists Shina's saved notes, including each note's id.",
     parameters: { type: "object", properties: {} },
   },
   {
     name: "update_note",
-    description: "Edits an existing note's title or body. Requires its id -- if you don't already have it, call list_notes first to find the matching one. Pass her new wording through exactly as she said or typed it.",
+    description: "Edits an existing note's title or body by id. Pass her new wording through exactly.",
     parameters: {
       type: "object",
       properties: {
@@ -279,7 +316,7 @@ const RAW_TOOLS: NeutralTool[] = [
   },
   {
     name: "delete_note",
-    description: "Deletes a note. Requires its id -- if you don't already have it, call list_notes first to find the matching one.",
+    description: "Deletes a note by id.",
     parameters: {
       type: "object",
       properties: { id: { type: "string" } },
@@ -288,34 +325,53 @@ const RAW_TOOLS: NeutralTool[] = [
   },
   {
     name: "list_recent_emails",
-    description: "Lists the most recent emails in the user's inbox.",
-    parameters: {
-      type: "object",
-      properties: { maxResults: { type: "number" } },
-    },
-  },
-  {
-    name: "send_email",
-    description: "Sends an email from the user's connected account.",
+    description: "Lists recent inbox emails across all of Shina's connected accounts (or one, by account label), newest first, with ids and which account each came from.",
     parameters: {
       type: "object",
       properties: {
-        to: { type: "string" },
+        maxResults: { type: "number", description: "Default 10" },
+        unread_only: { type: "boolean" },
+        account: { type: "string", description: "Account label, e.g. 'Work'. Omit for all accounts." },
+      },
+    },
+  },
+  {
+    name: "read_email",
+    description: "Reads the full body of one email, to summarise it or reply to it properly. Needs the email id and its account label (both come from list_recent_emails).",
+    parameters: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        account: { type: "string" },
+      },
+      required: ["id", "account"],
+    },
+  },
+  {
+    name: "draft_email",
+    description:
+      "Drafts an email (new, or a reply) and shows it to Shina as a card with Send and Edit buttons. This does NOT send anything -- only Shina pressing Send does. Use it whenever she asks you to email, reply to, tell, or follow up with someone. For a reply, pass reply_to_email_id (and account) so it threads correctly; 'to' and 'subject' can then be left for the original sender/subject. Write in Shina's voice and sign off as Shina.",
+    parameters: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "Recipient email address" },
         subject: { type: "string" },
         body: { type: "string" },
+        account: { type: "string", description: "Which account to send from (label). Replies default to the account the email arrived on." },
+        reply_to_email_id: { type: "string" },
       },
-      required: ["to", "subject", "body"],
+      required: ["body"],
     },
   },
   {
     name: "get_weather",
-    description: "Gets the weather forecast for the user's location (defaults to Lagos, Nigeria) for a given day.",
+    description: "Gets the forecast for a given day. Today's conditions and rain windows are already in your context -- use this for days further ahead.",
     parameters: {
       type: "object",
       properties: {
         day: {
           type: "number",
-          description: "0 = today (current conditions, default). 1 = tomorrow. Up to 6 = six days ahead. Use the day that matches what Shina asked for.",
+          description: "0 = today (default). 1 = tomorrow. Up to 6 = six days ahead.",
         },
       },
     },
@@ -323,7 +379,7 @@ const RAW_TOOLS: NeutralTool[] = [
   {
     name: "remember_fact",
     description:
-      "Saves a durable fact about Shina for future conversations. Only call this when the user shares something worth remembering long-term.",
+      "Saves a durable fact about Shina for future conversations (people, preferences, routines, projects). Call this when she shares something worth remembering long-term.",
     parameters: {
       type: "object",
       properties: {
@@ -337,27 +393,36 @@ const RAW_TOOLS: NeutralTool[] = [
 
 const ALL_TOOLS: NeutralTool[] = RAW_TOOLS.map(markOptionalNullable);
 
+// Tools that change something. Used for the honesty guard (a reply that
+// claims an action when none of these succeeded) and for receipts.
+const WRITE_TOOLS = new Set([
+  "create_calendar_event", "delete_calendar_event", "update_calendar_event",
+  "create_schedule_event", "create_reminder", "delete_schedule_event", "update_schedule_event",
+  "create_task", "update_task", "delete_task",
+  "create_note", "update_note", "delete_note",
+  "remember_fact",
+]);
+
 // --- Dynamic tool routing -------------------------------------------------
-// "event"/"add"/"book" are deliberately routed to every create/list tool --
-// that keyword alone doesn't say which destination the user means, so the
-// model is left to decide using the calendar/schedule/task/note rules in
-// the system prompt, with all of them actually available to it.
+// Sending every tool on every turn would blow through Groq's free-tier
+// tokens-per-minute, so tools are still routed by keyword -- but now with a
+// much wider net, an always-on show_schedule, and follow-up inheritance.
 
 const ROUTES: { keywords: string[]; tools: string[] }[] = [
-  { keywords: ["weather", "rain", "temperature", "forecast", "sunny", "cold", "hot"], tools: ["get_weather"] },
+  { keywords: ["weather", "rain", "temperature", "forecast", "sunny", "cold", "hot", "umbrella"], tools: ["get_weather"] },
   {
-    keywords: ["calendar", "meeting", "meet link", "google meet", "invite", "attendee"],
+    keywords: ["calendar", "meeting", "meet link", "google meet", "invite", "attendee", "call with", "zoom"],
     tools: ["create_calendar_event", "list_upcoming_events", "delete_calendar_event", "update_calendar_event"],
   },
   {
     keywords: [
       "schedule", "priority", "remind me", "reminder", "remind", "routine", "every day", "everyday",
-      "each day", "weekdays", "weekends", "recurring", "repeat", "repeats",
+      "each day", "weekdays", "weekends", "recurring", "repeat", "repeats", "gym", "appointment",
     ],
     tools: ["create_schedule_event", "create_reminder", "list_schedule_events", "delete_schedule_event", "update_schedule_event"],
   },
   {
-    keywords: ["task", "to-do", "todo", "checklist"],
+    keywords: ["task", "to-do", "todo", "checklist", "overdue", "done with", "finished", "completed", "tick off", "mark"],
     tools: ["create_task", "list_tasks", "update_task", "delete_task"],
   },
   {
@@ -365,14 +430,17 @@ const ROUTES: { keywords: string[]; tools: string[] }[] = [
     tools: ["create_note", "list_notes", "update_note", "delete_note"],
   },
   {
-    keywords: ["delete", "remove", "cancel that", "get rid of", "clear"],
+    keywords: ["delete", "remove", "cancel", "get rid of", "clear", "drop"],
     tools: [
       "delete_schedule_event", "delete_calendar_event", "delete_task", "delete_note",
       "list_schedule_events", "list_upcoming_events", "list_tasks", "list_notes",
     ],
   },
   {
-    keywords: ["edit", "change", "update", "rename", "modify", "reschedule"],
+    keywords: [
+      "edit", "change", "update", "rename", "modify", "reschedule", "move", "push", "shift", "postpone",
+      "bring forward", "earlier", "later", "clash", "conflict", "overlap", "fit", "plan",
+    ],
     tools: [
       "update_schedule_event", "list_schedule_events",
       "update_calendar_event", "list_upcoming_events",
@@ -381,44 +449,64 @@ const ROUTES: { keywords: string[]; tools: string[] }[] = [
     ],
   },
   {
-    // "tomorrow"/"next week" etc are ambiguous across Schedule, Calendar,
-    // and Weather -- surface lookups for all three and let the model (with
-    // the system prompt's date-resolution rule) pick what's actually being
-    // asked about.
-    keywords: ["tomorrow", "next week", "this week", "what's on", "what do i have", "my day", "coming up"],
+    keywords: ["next week", "this week", "weekend", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
     tools: ["list_schedule_events", "list_upcoming_events", "get_weather"],
   },
   {
-    keywords: ["event", "events", "add", "book"],
+    keywords: ["event", "events", "add", "book", "put", "set up", "block"],
     tools: [
       "create_calendar_event", "list_upcoming_events",
       "create_schedule_event", "create_reminder", "list_schedule_events",
       "create_task", "create_note",
     ],
   },
-  { keywords: ["email", "inbox", "gmail", "reply", "message from"], tools: ["list_recent_emails", "send_email"] },
-  { keywords: ["remember", "don't forget", "keep in mind", "note that"], tools: ["remember_fact"] },
+  {
+    keywords: [
+      "email", "inbox", "gmail", "reply", "respond", "message from", "mail", "draft", "write to", "tell ",
+      "let ", "follow up", "follow-up", "summar", "unread", "send",
+    ],
+    tools: ["list_recent_emails", "read_email", "draft_email"],
+  },
+  { keywords: ["remember", "don't forget", "keep in mind", "note that", "my name", "i prefer", "i like"], tools: ["remember_fact"] },
 ];
 
-function selectTools(message: string): NeutralTool[] | undefined {
+const ALWAYS_ON = ["show_schedule"];
+
+function matchRoutes(message: string): Set<string> {
   const lower = message.toLowerCase();
-  const matchedNames = new Set<string>();
+  const names = new Set<string>();
   for (const route of ROUTES) {
-    if (route.keywords.some((k) => lower.includes(k))) {
-      route.tools.forEach((t) => matchedNames.add(t));
-    }
+    if (route.keywords.some((k) => lower.includes(k))) route.tools.forEach((t) => names.add(t));
   }
-  if (matchedNames.size === 0) return undefined;
-  return ALL_TOOLS.filter((t) => matchedNames.has(t.name));
+  return names;
+}
+
+const FOLLOW_UP_RE = /^(yes|yeah|yep|yup|ok|okay|sure|please|do it|go ahead|go for it|sounds good|perfect|great|that works|keep|no|nope|not that|instead|actually|and |also )/i;
+
+function selectTools(message: string, history: HistoryMessage[]): NeutralTool[] {
+  const names = matchRoutes(message);
+  ALWAYS_ON.forEach((t) => names.add(t));
+
+  // "Yes, move it" / "make it shorter" / "and Tolu too" carry no keywords of
+  // their own -- inherit whatever the previous couple of turns needed.
+  const isShort = message.trim().split(/\s+/).length <= 8;
+  if (isShort || FOLLOW_UP_RE.test(message.trim())) {
+    const recent = history.slice(-4);
+    for (const m of recent) matchRoutes(m.parts.map((p) => p.text).join(" ")).forEach((t) => names.add(t));
+    // A pending draft in the last reply means "send it"/"shorter" is about email.
+    const last = recent[recent.length - 1]?.parts.map((p) => p.text).join(" ") ?? "";
+    if (last.includes("Draft (NOT sent) email")) ["draft_email", "read_email"].forEach((t) => names.add(t));
+  }
+
+  return ALL_TOOLS.filter((t) => names.has(t.name));
 }
 
 // GPT-OSS's reasoning trace costs real tokens -- keep it off for the simple
-// stuff (calendar, weather, chit-chat) and only switch it on when the
-// message actually calls for multi-step thinking or planning.
+// stuff and only switch it on when the message calls for multi-step thinking.
 const DEEP_REASONING_KEYWORDS = [
   "plan", "compare", "analyze", "strategy", "should i", "pros and cons",
   "explain why", "think through", "decide between", "help me figure out",
-  "write code", "debug", "algorithm",
+  "write code", "debug", "algorithm", "fit", "clash", "prioriti",
 ];
 
 function needsDeepReasoning(message: string): boolean {
@@ -427,46 +515,73 @@ function needsDeepReasoning(message: string): boolean {
 }
 
 // --- Tool execution -----------------------------------------------------
-// Central switch used by both providers' loops below. Throws on failure --
-// callers wrap this so a failed tool shows up as an honest error in the
-// executed-calls list rather than crashing the whole request.
 
-async function executeTool(
-  name: string,
-  args: Record<string, unknown>,
-  refreshToken: string,
-  location: { lat: number; lon: number } | null
-) {
+type ToolEnv = {
+  accounts: GoogleAccount[];
+  primary: GoogleAccount | null;
+  location: { lat: number; lon: number } | null;
+  weather: FullWeatherData | null;
+};
+
+function requirePrimary(env: ToolEnv): string {
+  if (!env.primary) throw new Error("No Google account connected -- connect one on the Accounts page first.");
+  return env.primary.refresh_token;
+}
+
+function accountFor(env: ToolEnv, label: unknown): GoogleAccount {
+  const acc = pickAccount(env.accounts, typeof label === "string" ? label : null);
+  if (!acc) throw new Error("No Google account connected -- connect one on the Accounts page first.");
+  return acc;
+}
+
+function extractAddress(from: string): string {
+  const m = from.match(/<(.+)>/);
+  return m ? m[1] : from.trim();
+}
+
+async function executeTool(name: string, args: Record<string, unknown>, env: ToolEnv) {
+  const today = lagosParts().dateKey;
   switch (name) {
+    case "show_schedule": {
+      const date = (args.date as string) || today;
+      const items = await getAgenda(date, env.primary?.refresh_token ?? null, env.weather);
+      const from = args.from_time as string | undefined;
+      const to = args.to_time as string | undefined;
+      return {
+        date,
+        items: items.filter((i) => {
+          if (!from && !to) return true;
+          if (!i.start) return false;
+          const m = toMinutes(i.start);
+          return (!from || m >= toMinutes(from)) && (!to || m <= toMinutes(to));
+        }),
+      };
+    }
     case "create_calendar_event":
-      return createCalendarEvent(refreshToken, args as never);
+      return createCalendarEvent(requirePrimary(env), args as never);
     case "list_upcoming_events":
-      return listUpcomingEvents(refreshToken, (args.hoursAhead as number) ?? 24);
+      return listUpcomingEvents(requirePrimary(env), (args.hoursAhead as number) ?? 24);
     case "delete_calendar_event":
-      return deleteCalendarEvent(refreshToken, args.eventId as string);
+      return deleteCalendarEvent(requirePrimary(env), args.eventId as string);
     case "update_calendar_event":
-      return updateCalendarEvent(refreshToken, args.eventId as string, args as never);
+      return updateCalendarEvent(requirePrimary(env), args.eventId as string, args as never);
     case "create_schedule_event":
       return createScheduleEvent(args as never);
     case "create_reminder":
       // Same underlying schedule_events row create_schedule_event uses --
       // this just guarantees the date defaults sensibly and
-      // remind_before_minutes is never left unset, since an unset value
-      // here means "not a reminder at all" as far as the Reminders tab
-      // and the actual push-notification scheduler are concerned.
+      // remind_before_minutes is never left unset (unset = "not a reminder"
+      // as far as the Reminders tab and the push scheduler are concerned).
       return createScheduleEvent({
         title: args.title as string,
-        event_date: (args.event_date as string | undefined) ?? todayLagosDateKey(),
+        event_date: (args.event_date as string | undefined) ?? today,
         start_time: (args.start_time as string | undefined) ?? null,
         remind_before_minutes: (args.remind_before_minutes as number | undefined) ?? 0,
       } as never);
     case "list_schedule_events":
-      return listScheduleEvents((args.date as string | undefined) ?? todayLagosDateKey());
+      return listScheduleEvents((args.date as string | undefined) ?? today);
     case "delete_schedule_event":
-      return deleteScheduleEvent(
-        args.id as string,
-        (args.scope as "single" | "series" | undefined) ?? "single"
-      );
+      return deleteScheduleEvent(args.id as string, (args.scope as "single" | "series" | undefined) ?? "single");
     case "update_schedule_event":
       return updateScheduleEvent(args.id as string, args as never);
     case "create_task":
@@ -485,17 +600,82 @@ async function executeTool(
       return updateNote(args.id as string, args as never);
     case "delete_note":
       return deleteNote(args.id as string);
-    case "list_recent_emails":
-      return listRecentEmails(refreshToken, (args.maxResults as number) ?? 10);
-    case "send_email":
-      return sendEmail(refreshToken, args.to as string, args.subject as string, args.body as string);
+    case "list_recent_emails": {
+      const max = Math.min((args.maxResults as number) ?? 10, 20);
+      const targets = args.account ? [accountFor(env, args.account)] : env.accounts;
+      if (targets.length === 0) throw new Error("No Google account connected.");
+      const lists = await Promise.all(
+        targets.map(async (acc) => {
+          try {
+            const emails = await listRecentEmails(acc.refresh_token, max);
+            return emails.map((e) => ({ ...e, account: acc.label }));
+          } catch {
+            return [];
+          }
+        })
+      );
+      return lists
+        .flat()
+        .filter((e) => !args.unread_only || e.unread)
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+        .slice(0, max)
+        .map((e) => ({ id: e.id, account: e.account, from: e.from, subject: e.subject, snippet: e.snippet, unread: e.unread, date: e.date }));
+    }
+    case "read_email": {
+      const acc = accountFor(env, args.account);
+      const meta = await getEmailMeta(acc.refresh_token, args.id as string);
+      const { body } = await getFullEmailBody(acc.refresh_token, args.id as string);
+      return { id: args.id, account: acc.label, from: meta.from, subject: meta.subject, body: body.slice(0, 4000) };
+    }
+    case "draft_email": {
+      let acc = accountFor(env, args.account);
+      let to = (args.to as string | undefined) ?? "";
+      let subject = (args.subject as string | undefined) ?? "";
+      let threadId: string | null = null;
+      let inReplyTo: string | null = null;
+      let replyToMessageId: string | null = null;
+
+      if (args.reply_to_email_id) {
+        // Find the account the original arrived on if none was named.
+        const candidates = args.account ? [acc] : env.accounts;
+        let meta = null;
+        for (const candidate of candidates) {
+          try {
+            meta = await getEmailMeta(candidate.refresh_token, args.reply_to_email_id as string);
+            acc = candidate;
+            break;
+          } catch {
+            // not in this mailbox
+          }
+        }
+        if (!meta) throw new Error("Couldn't find the email to reply to.");
+        threadId = meta.threadId;
+        inReplyTo = meta.messageIdHeader;
+        replyToMessageId = meta.id;
+        to = to || extractAddress(meta.from);
+        subject = subject || (meta.subject.toLowerCase().startsWith("re:") ? meta.subject : `Re: ${meta.subject}`);
+      }
+
+      if (!to) throw new Error("Who should this go to? I need an email address.");
+      return {
+        status: "draft_ready_NOT_sent",
+        draft: {
+          accountLabel: acc.label,
+          fromEmail: acc.email,
+          to,
+          subject,
+          body: args.body as string,
+          threadId,
+          inReplyTo,
+          replyToMessageId,
+        },
+      };
+    }
     case "get_weather":
-      // Falls back to the DEFAULT_LAT/DEFAULT_LON (Lagos) constant only
-      // when the browser didn't supply real coordinates -- previously this
-      // always used the default, so chat's weather answers could silently
-      // disagree with the Weather page (which uses real geolocation) for
-      // anyone not physically in that exact default spot.
-      return location ? fetchWeather(location.lat, location.lon) : fetchWeather();
+      return getWeatherCached(env.location).then((w) => {
+        if (!w) throw new Error("Weather service is unavailable right now.");
+        return w;
+      });
     case "remember_fact":
       await addMemoryFact(args.fact as string, (args.category as string | undefined) ?? "general");
       return { saved: true };
@@ -505,146 +685,148 @@ async function executeTool(
 }
 
 // A remind_before_minutes value of 0 is a real, intentional setting ("notify
-// right at start time") -- so this checks for null/undefined specifically,
-// never falsy, or a genuine 0 would silently print nothing.
+// right at start time") -- so this checks for null/undefined specifically.
 function remindPhrase(remindBeforeMinutes: unknown): string {
   if (remindBeforeMinutes === null || remindBeforeMinutes === undefined) return "";
   const mins = remindBeforeMinutes as number;
-  return mins === 0
-    ? " I'll remind you right when it starts."
-    : ` I'll remind you ${mins} minutes before.`;
+  return mins === 0 ? ", reminder at start" : `, reminder ${mins}m before`;
 }
 
-// Turns one executed tool call's result into the sentence(s) shown to
-// Shina. This -- not anything the model writes itself -- is the only
-// source of "Done" confirmations, so CeeBee can never claim an action
-// succeeded that a tool didn't actually perform.
-function formatLocally(name: string, args: Record<string, unknown>, result: unknown): string {
+// One receipt line per successful write -- built from the real tool result,
+// so the "what I did" list can never claim something that didn't happen.
+function receiptFor(name: string, args: Record<string, unknown>, result: unknown): string | null {
   switch (name) {
     case "create_calendar_event": {
       const r = result as { meetLink: string | null };
-      const meet = r.meetLink ? ` I've added a Google Meet link.` : "";
-      return `Done — I've added "${args.title}" to your calendar.${meet}`;
-    }
-    case "list_upcoming_events": {
-      const events = result as { id: string; title: string; start: string; meetLink: string | null }[];
-      if (events.length === 0) return "You have nothing coming up on your calendar.";
-      const lines = events.map((e) => {
-        const time = new Date(e.start).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" });
-        return `- ${e.title} (${time})${e.meetLink ? " — has a Meet link" : ""}`;
-      });
-      return `Here's what's coming up on your calendar:\n${lines.join("\n")}`;
+      return `Added "${args.title}" to your calendar${r.meetLink ? " with a Meet link" : ""}`;
     }
     case "delete_calendar_event":
-      return "Done — removed that from your calendar.";
+      return "Removed that from your calendar";
     case "update_calendar_event": {
       const r = result as { title: string | null };
-      return `Done — updated "${r.title ?? args.title ?? "that event"}" on your calendar.`;
+      return `Updated "${r.title ?? args.title ?? "event"}" on your calendar`;
     }
     case "create_schedule_event": {
       const r = result as { occurrences: number };
-      const priority = (args.priority as number | undefined) ?? 3;
       const time = args.start_time ? ` at ${args.start_time}` : "";
-      const remind = remindPhrase(args.remind_before_minutes);
-      if (r.occurrences > 1) {
-        const label =
-          args.recurrence === "daily" ? "every day" :
-          args.recurrence === "weekdays" ? "on weekdays" :
-          args.recurrence === "weekends" ? "on weekends" : "on the days you picked";
-        return `Done — added "${args.title}"${time} to your schedule, repeating ${label} (${r.occurrences} days, priority ${priority}).${remind}`;
-      }
-      return `Done — added "${args.title}"${time} to your schedule (priority ${priority}).${remind}`;
+      const repeat = r.occurrences > 1 ? `, repeating (${r.occurrences} days)` : "";
+      return `Scheduled "${args.title}"${time} · P${(args.priority as number | undefined) ?? 3}${repeat}${remindPhrase(args.remind_before_minutes)}`;
     }
     case "create_reminder": {
       const time = args.start_time ? ` at ${args.start_time}` : "";
-      const remindMinutes = (args.remind_before_minutes as number | undefined) ?? 0;
-      const remind = remindMinutes === 0 ? "right when it starts" : `${remindMinutes} minutes before`;
-      return `Done — I'll remind you to "${args.title}"${time} (${remind}). It's on your Reminders list.`;
-    }
-    case "list_schedule_events": {
-      const events = result as { id: string; title: string; start_time: string | null; priority: number; remind_before_minutes: number | null }[];
-      if (events.length === 0) return "Nothing on your schedule for that day.";
-      const lines = events.map(
-        (e) =>
-          `- ${e.title}${e.start_time ? ` (${e.start_time.slice(0, 5)})` : ""} — priority ${e.priority}${
-            e.remind_before_minutes != null ? " ⏰" : ""
-          }`
-      );
-      return `Here's your schedule:\n${lines.join("\n")}`;
+      return `Reminder set: "${args.title}"${time}`;
     }
     case "delete_schedule_event": {
       const r = result as { scope: "single" | "series" };
-      return r.scope === "series"
-        ? "Done — removed that and every future occurrence from your schedule."
-        : "Done — removed that from your schedule.";
+      return r.scope === "series" ? "Removed that and every future repeat" : "Removed that from your schedule";
     }
     case "update_schedule_event": {
-      const r = result as { event: { title: string; priority: number; start_time: string | null; remind_before_minutes: number | null } };
-      const bits: string[] = [];
-      if (args.priority !== undefined) bits.push(`priority now ${r.event.priority}`);
-      if (args.start_time !== undefined) bits.push(`time now ${r.event.start_time?.slice(0, 5)}`);
-      if (args.event_date !== undefined) bits.push(`date now ${args.event_date}`);
-      const remind = remindPhrase(args.remind_before_minutes);
-      const detail = bits.length > 0 ? ` (${bits.join(", ")})` : "";
-      return `Done — updated "${r.event.title}"${detail}.${remind}`;
+      const r = result as { event: { title: string; event_date: string; start_time: string | null; priority: number } };
+      const when = [
+        args.event_date !== undefined ? labelForKey(r.event.event_date, "short") : null,
+        args.start_time !== undefined ? r.event.start_time?.slice(0, 5) : null,
+      ].filter(Boolean);
+      const bits = [
+        when.length ? `now ${when.join(" ")}` : null,
+        args.priority !== undefined ? `P${r.event.priority}` : null,
+      ].filter(Boolean);
+      return `Updated "${r.event.title}"${bits.length ? ` · ${bits.join(" · ")}` : ""}`;
     }
     case "create_task":
-      return `Done — added "${args.title}" to your tasks.`;
-    case "list_tasks": {
-      const tasks = result as { id: string; title: string; done: boolean }[];
-      if (tasks.length === 0) return "Your task list is empty.";
-      const lines = tasks.map((t) => `- ${t.done ? "✓ " : ""}${t.title}`);
-      return `Here's your tasks:\n${lines.join("\n")}`;
-    }
+      return `Added task "${args.title}"`;
     case "update_task": {
-      const r = result as { task: { title: string; done: boolean } };
-      if (args.done === true) return `Done — marked "${r.task.title}" complete.`;
-      if (args.done === false) return `Done — marked "${r.task.title}" not done.`;
-      return `Done — updated "${r.task.title}".`;
+      const r = result as { task: { title: string } };
+      if (args.done === true) return `Ticked off "${r.task.title}"`;
+      if (args.done === false) return `Reopened "${r.task.title}"`;
+      return `Updated task "${r.task.title}"`;
     }
     case "delete_task":
-      return "Done — removed that task.";
+      return "Deleted that task";
     case "create_note":
-      return "Done — saved that note.";
-    case "list_notes": {
-      const notes = result as { id: string; title: string | null; body: string }[];
-      if (notes.length === 0) return "You don't have any notes saved.";
-      const lines = notes.map((n) => `- ${n.title ? `${n.title}: ` : ""}${n.body.slice(0, 60)}`);
-      return `Here's your notes:\n${lines.join("\n")}`;
-    }
+      return "Saved that note";
     case "update_note":
-      return "Done — updated that note.";
+      return "Updated that note";
     case "delete_note":
-      return "Done — deleted that note.";
-    case "list_recent_emails": {
-      const emails = result as { from: string; subject: string; unread: boolean }[];
-      const unread = emails.filter((e) => e.unread).length;
-      if (emails.length === 0) return "No recent emails.";
-      const lines = emails.slice(0, 5).map((e) => `- ${e.from}: ${e.subject}`);
-      return `You have ${unread} unread out of ${emails.length} recent emails:\n${lines.join("\n")}`;
-    }
-    case "send_email":
-      return `Done — I've sent the email to ${args.to}.`;
-    case "get_weather": {
-      const w = result as {
-        currentTemp: number; condition: string; high: number; low: number;
-        daily: { date: string; high: number; low: number; condition: string; precipChance: number }[];
-      };
-      const day = (args.day as number | undefined) ?? 0;
-      if (day === 0) {
-        return `It's currently ${w.currentTemp}°C and ${w.condition.toLowerCase()}. High ${w.high}°, low ${w.low}°.`;
-      }
-      const d = w.daily[day];
-      if (!d) return "I can only see the next 7 days of forecast.";
-      const label = day === 1 ? "Tomorrow" : new Date(d.date).toLocaleDateString("en-GB", { weekday: "long" });
-      const rain = d.precipChance ? `, ${d.precipChance}% chance of rain` : "";
-      return `${label}: ${d.condition.toLowerCase()}, high ${d.high}°, low ${d.low}°${rain}.`;
-    }
+      return "Deleted that note";
     case "remember_fact":
-      return "Got it — I'll remember that.";
+      return "Remembered that";
     default:
-      return "Done.";
+      return null;
   }
+}
+
+function agendaCard(date: string, items: Awaited<ReturnType<typeof getAgenda>>, from?: string, to?: string): Card {
+  const today = lagosParts().dateKey;
+  const dayLabel = date === today ? "Today" : labelForKey(date, "short");
+  const range = from || to ? ` · ${from ?? "…"}–${to ?? "…"}` : "";
+  return {
+    type: "agenda",
+    title: `${dayLabel}${range}`,
+    items: items.map<AgendaCardItem>((i) => {
+      const rainy = !i.meetLink && i.rainChance !== null && i.rainChance >= 50;
+      return {
+        time: i.start,
+        title: i.title,
+        note: rainy ? `Rain ${i.rainChance}%` : i.done ? "Done" : i.meetLink ? "Meet" : null,
+        tone: i.done ? "done" : rainy ? "ember" : "honey",
+      };
+    }),
+  };
+}
+
+// Turns the executed calls into the cards Shina sees under CeeBee's words.
+function buildCards(executed: ExecutedCall[]): Card[] {
+  const cards: Card[] = [];
+  const receipts: { ok: boolean; text: string }[] = [];
+
+  for (const call of executed) {
+    const r = call.result as Record<string, unknown> | null;
+    if (r && typeof r === "object" && "skipped" in r) continue;
+    if (r && typeof r === "object" && "error" in r) {
+      if (WRITE_TOOLS.has(call.name) || call.name === "draft_email") {
+        receipts.push({ ok: false, text: `Couldn't ${call.name.replace(/_/g, " ")}: ${r.error}` });
+      }
+      continue;
+    }
+
+    switch (call.name) {
+      case "show_schedule": {
+        const res = call.result as { date: string; items: Awaited<ReturnType<typeof getAgenda>> };
+        cards.push(agendaCard(res.date, res.items, call.args.from_time as string, call.args.to_time as string));
+        break;
+      }
+      case "draft_email": {
+        const res = call.result as { draft: Extract<Card, { type: "email_draft" }> };
+        cards.push({ ...res.draft, type: "email_draft", status: "draft" });
+        break;
+      }
+      case "list_recent_emails": {
+        const res = call.result as { id: string; account: string; from: string; subject: string; snippet: string; unread: boolean }[];
+        if (res.length) {
+          cards.push({
+            type: "emails",
+            items: res.slice(0, 6).map((e) => ({
+              id: e.id,
+              accountLabel: e.account,
+              from: e.from.replace(/<.*>/, "").replace(/"/g, "").trim() || e.from,
+              subject: e.subject,
+              snippet: e.snippet,
+              unread: e.unread,
+            })),
+          });
+        }
+        break;
+      }
+      default: {
+        if (!WRITE_TOOLS.has(call.name)) break;
+        const line = receiptFor(call.name, call.args, call.result);
+        if (line) receipts.push({ ok: true, text: line });
+      }
+    }
+  }
+
+  if (receipts.length) cards.unshift({ type: "actions", items: receipts });
+  return cards;
 }
 
 // --- Provider adapters -----------------------------------------------------
@@ -663,11 +845,10 @@ type ProviderResult = {
   };
 };
 
-type HistoryMessage = { role: "user" | "model"; parts: { text: string }[] };
+export type HistoryMessage = { role: "user" | "model"; parts: { text: string }[]; cards?: Card[] };
 
 // How many back-and-forth tool rounds a single request is allowed before
-// CeeBee is forced to wrap up with whatever she's completed so far. Keeps
-// a confused model from looping forever instead of just answering.
+// CeeBee is forced to wrap up with whatever she's completed so far.
 const MAX_TOOL_ROUNDS = 5;
 
 function addUsage(
@@ -686,24 +867,43 @@ function addUsage(
 // creating duplicate rows when a model re-emits a call it already made.
 async function runToolOnce(
   call: { name: string; args: Record<string, unknown> },
-  refreshToken: string,
+  env: ToolEnv,
   seenSignatures: Set<string>,
-  executed: ExecutedCall[],
-  location: { lat: number; lon: number } | null
+  executed: ExecutedCall[]
 ): Promise<unknown> {
-  const signature = `${call.name}:${JSON.stringify(call.args)}`;
+  // Models sometimes send explicit nulls for optional fields -- drop them
+  // so downstream "only update what was passed" logic stays correct.
+  const args = Object.fromEntries(Object.entries(call.args).filter(([, v]) => v !== null && v !== undefined));
+  const signature = `${call.name}:${JSON.stringify(args)}`;
   let result: unknown;
   if (seenSignatures.has(signature)) {
     result = { skipped: true, reason: "Already done earlier in this same request." };
   } else {
     seenSignatures.add(signature);
     try {
-      result = await executeTool(call.name, call.args, refreshToken, location);
+      result = await executeTool(call.name, args, env);
     } catch (err) {
       result = { error: err instanceof Error ? err.message : "Unknown error" };
     }
   }
-  executed.push({ name: call.name, args: call.args, result });
+  executed.push({ name: call.name, args, result });
+  return result;
+}
+
+// What the model gets back for a tool call. show_schedule's agenda can be
+// long; the model only needs the gist since Shina sees the full card.
+function resultForModel(name: string, result: unknown): unknown {
+  if (name === "draft_email" && result && typeof result === "object" && "draft" in result) {
+    return { ...result, note: "Shown to Shina as a card with Send/Edit. It has NOT been sent. Do not say it was sent." };
+  }
+  if (name === "show_schedule" && result && typeof result === "object" && "items" in result) {
+    const r = result as { date: string; items: { id: string; title: string; start: string | null; source: string; rainChance: number | null; done: boolean }[] };
+    return {
+      date: r.date,
+      shownToShinaAsCard: true,
+      items: r.items.map((i) => ({ id: i.id, title: i.title, start: i.start, source: i.source, rain: i.rainChance, done: i.done })),
+    };
+  }
   return result;
 }
 
@@ -739,30 +939,31 @@ function toGeminiDeclarations(tools: NeutralTool[]): FunctionDeclaration[] {
   }));
 }
 
+function historyText(m: HistoryMessage): string {
+  const text = m.parts.map((p) => p.text).join(" ");
+  const digest = m.cards?.length ? cardsDigest(m.cards) : "";
+  return digest ? `${text}\n${digest}` : text;
+}
+
 async function callGemini(
   model: string,
   systemPrompt: string,
   history: HistoryMessage[],
   userMessage: string,
-  tools: NeutralTool[] | undefined,
-  refreshToken: string,
-  location: { lat: number; lon: number } | null
+  tools: NeutralTool[],
+  env: ToolEnv
 ): Promise<ProviderResult> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("Missing GEMINI_API_KEY in your .env file.");
 
   const ai = new GoogleGenAI({ apiKey });
 
-  // Mutable conversation transcript -- grows with each tool round so the
-  // model sees its own prior calls and their real results before deciding
-  // whether it needs to do anything else. Typed loosely (not against the
-  // SDK's exact Content/Part types) because we build these objects by
-  // hand across three different shapes (text, functionCall passthrough,
-  // functionResponse) and don't want a future SDK type-narrowing to break
-  // the build again over what is, at runtime, already the correct shape.
+  // Typed loosely (not against the SDK's exact Content/Part types) because
+  // these are built by hand across three different shapes (text,
+  // functionCall passthrough, functionResponse).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const contents: any[] = [
-    ...history.map((m) => ({ role: m.role, parts: m.parts.map((p) => ({ text: p.text })) })),
+    ...history.map((m) => ({ role: m.role, parts: [{ text: historyText(m) }] })),
     { role: "user", parts: [{ text: userMessage }] },
   ];
 
@@ -770,7 +971,7 @@ async function callGemini(
     systemInstruction: systemPrompt,
     thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
   };
-  if (tools) config.tools = [{ functionDeclarations: toGeminiDeclarations(tools) }];
+  if (tools.length) config.tools = [{ functionDeclarations: toGeminiDeclarations(tools) }];
 
   const executed: ExecutedCall[] = [];
   const seenSignatures = new Set<string>();
@@ -807,15 +1008,13 @@ async function callGemini(
       break;
     }
 
-    // Preserve the model's actual turn (with its functionCall parts) so
-    // the next round's request is a faithful continuation of this one.
     const modelContent = response.candidates?.[0]?.content;
     if (modelContent) contents.push(modelContent);
 
     const functionResponseParts = [];
     for (const call of calls) {
-      const result = await runToolOnce(call, refreshToken, seenSignatures, executed, location);
-      functionResponseParts.push({ functionResponse: { name: call.name, response: { result } } });
+      const result = await runToolOnce(call, env, seenSignatures, executed);
+      functionResponseParts.push({ functionResponse: { name: call.name, response: { result: resultForModel(call.name, result) } } });
     }
     contents.push({ role: "user", parts: functionResponseParts });
   }
@@ -828,25 +1027,23 @@ async function callGroq(
   systemPrompt: string,
   history: HistoryMessage[],
   userMessage: string,
-  tools: NeutralTool[] | undefined,
+  tools: NeutralTool[],
   useReasoning: boolean,
-  refreshToken: string,
-  location: { lat: number; lon: number } | null
+  env: ToolEnv
 ): Promise<ProviderResult> {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error("Missing GROQ_API_KEY in your .env file.");
 
-  // Mutable OpenAI-style message list -- grows with each tool round.
   const messages: Array<Record<string, unknown>> = [
     { role: "system", content: systemPrompt },
     ...history.map((m) => ({
       role: m.role === "model" ? "assistant" : "user",
-      content: m.parts.map((p) => p.text).join(" "),
+      content: historyText(m),
     })),
     { role: "user", content: userMessage },
   ];
 
-  const groqTools = tools?.map((t) => ({
+  const groqTools = tools.map((t) => ({
     type: "function",
     function: {
       name: t.name,
@@ -857,10 +1054,9 @@ async function callGroq(
           Object.entries(t.parameters.properties).map(([key, val]) => [
             key,
             {
-              // A nullable optional field becomes a real JSON Schema union
-              // type ["string", "null"], so GPT-OSS explicitly sending
-              // null for a field it has nothing to fill in doesn't get
-              // rejected by Groq's strict tool-call validator.
+              // Nullable optional fields become a JSON Schema union type so
+              // GPT-OSS sending an explicit null isn't rejected by Groq's
+              // strict tool-call validator.
               type: val.nullable ? [val.type, "null"] : val.type,
               description: val.description,
               items: val.items,
@@ -881,16 +1077,11 @@ async function callGroq(
     const body: Record<string, unknown> = {
       model,
       messages,
-      // GPT-OSS includes a reasoning trace by default. That's wasted tokens
-      // for simple lookups/actions, but genuinely useful for questions that
-      // need real multi-step thinking -- toggled per-message, not globally off.
       include_reasoning: useReasoning,
     };
-    if (groqTools) {
+    if (groqTools.length) {
       body.tools = groqTools;
       body.tool_choice = "auto";
-      // Lets the model return several tool calls in one response (e.g.
-      // several create_schedule_event calls for a multi-item request).
       body.parallel_tool_calls = true;
     }
 
@@ -929,9 +1120,15 @@ async function callGroq(
     messages.push({ role: "assistant", content: message.content ?? null, tool_calls: rawToolCalls });
 
     for (const tc of rawToolCalls) {
-      const call = { name: tc.function.name, args: JSON.parse(tc.function.arguments || "{}") };
-      const result = await runToolOnce(call, refreshToken, seenSignatures, executed, location);
-      messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(result) });
+      let parsedArgs: Record<string, unknown> = {};
+      try {
+        parsedArgs = JSON.parse(tc.function.arguments || "{}");
+      } catch {
+        parsedArgs = {};
+      }
+      const call = { name: tc.function.name, args: parsedArgs };
+      const result = await runToolOnce(call, env, seenSignatures, executed);
+      messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(resultForModel(call.name, result)) });
     }
   }
 
@@ -940,71 +1137,129 @@ async function callGroq(
 
 // --- System prompt ---------------------------------------------------
 
-async function buildSystemPrompt(userMessage: string) {
-  const now = new Date();
+function buildSystemPrompt(dayContext: string, facts: string[]) {
   const formatted = new Intl.DateTimeFormat("en-GB", {
     weekday: "long", year: "numeric", month: "long", day: "numeric",
     hour: "2-digit", minute: "2-digit", timeZone: "Africa/Lagos",
-  }).format(now);
+  }).format(new Date());
 
-  const facts = await getRelevantMemoryFacts(userMessage);
   const memorySection = facts.length > 0
-    ? `\n\nRelevant things you know about Shina:\n${facts.map((f) => `- ${f}`).join("\n")}`
+    ? `\n\nWHAT YOU KNOW ABOUT SHINA:\n${facts.map((f) => `- ${f}`).join("\n")}`
     : "";
 
-  return `You are CeeBee, Shina's personal assistant (she/her). Be direct and concise -- 1-3 sentences unless asked for more.
+  return `You are CeeBee, Shina's personal assistant (she/her). Your voice: quick, warm, a little cheeky. Busy days, handled.
 
-You have four separate places things can go -- never mix them up. Each one now has full create/list/edit/delete tools:
-- Google Calendar (create_calendar_event / list_upcoming_events / update_calendar_event / delete_calendar_event): real calendar meetings and appointments. Only use this when Shina explicitly says "calendar", wants a Google Meet link, or wants to invite other people.
-- Her Schedule (create_schedule_event / list_schedule_events / update_schedule_event / delete_schedule_event): her personal day list, with priority levels and reminders. This is the default any time she says "schedule", gives something a priority, or wants it tracked for the day.
-- Her Tasks (create_task / list_tasks / update_task / delete_task): a plain checkbox to-do with no priority and no specific time requirement. Use this when she says "task" or "to-do".
-- Her Notes (create_note / list_notes / update_note / delete_note): freeform text she wants saved verbatim, not an action item.
+HOW YOU TALK
+- Short. 1-3 sentences unless she asks for more. No headings, no bullet dumps -- cards show lists for you.
+- When you've done something, say what you did in plain words, then offer the obvious next step. e.g. "Done -- gym is now Tue 07:00. Want me to tell Adeola you'll send comments by 5?"
+- Be proactive: if something in THINGS YOU'VE NOTICED is relevant to what she asked, mention it and offer the fix.
+- Never claim you did, moved, added, sent or deleted anything unless a tool in THIS turn actually returned success. If a tool failed, say so plainly.
+- Finish EVERY reply with one final line in exactly this format, giving 1-3 short tappable next steps written as Shina would say them (max 6 words each):
+NEXT: Yes, move it | Summarise Adeola's email
+Omit the NEXT line only if there is genuinely nothing useful to suggest.
 
-If Shina lists multiple things to add in one message (numbered or not), call the matching create tool once per item, all in this same turn -- do not stop after the first one. Carry over each item's own priority, time, and reminder exactly as she stated them.
+YOU ALREADY KNOW HER DAY
+The snapshot below is live. Answer from it directly -- don't call a list tool for today or tomorrow. Use the ids in it to edit/delete without looking anything up. When she asks what's on (a day, morning, afternoon, evening), call show_schedule so she sees it as a card, and add one useful observation (a clash, rain, a gap).
 
-If something repeats "every day"/"everyday", set recurrence to "daily" on create_schedule_event. "Weekdays" or "every weekday" -> "weekdays". "Weekends" -> "weekends". Specific days (e.g. "Mondays and Wednesdays") -> "custom" with recurrence_days (0=Sunday..6=Saturday). Recurrence only applies to the Schedule, never to Google Calendar or Tasks.
+WHERE THINGS GO -- never mix them up
+- Google Calendar: real meetings/appointments. Only when she says "calendar", wants a Meet link, or invites people.
+- Schedule: her personal day list with priorities (P1 low .. P5 urgent) and reminders. The default for "schedule", priorities, routines.
+- Reminders: use create_reminder whenever she says "remind me"/"reminder". If she gives no lead time, leave remind_before_minutes out.
+- Tasks: plain checkbox to-dos.
+- Notes: freeform text saved verbatim.
+If she lists several things, call the matching create tool once per item, all in this same turn. "Every day" -> recurrence daily; weekdays -> weekdays; weekends -> weekends; specific days -> custom with recurrence_days (0=Sun..6=Sat). Moving something = update its date/time, never delete + recreate.
+Pass her wording through exactly for tasks and notes. If something is genuinely ambiguous, ask instead of guessing.
 
-To delete, remove, or edit/change something, you need its id first. If you don't already have it from earlier in this conversation, call the matching list tool first (list_schedule_events, list_upcoming_events, list_tasks, or list_notes), find the item that matches what Shina described, then call the delete or update tool with its id. Every destination has both an edit and a delete tool now -- Calendar, Schedule, Tasks, and Notes -- so never tell her something can't be edited or deleted; look its id up and do it. When editing, only pass the fields that are actually changing. Never tell her something was deleted, added, or changed unless a tool actually returned a real result confirming it -- if you're not certain, say so plainly instead of guessing.
+EMAIL
+You can list, read and draft emails across all her accounts. You can NOT send -- draft_email shows a card with Send/Edit and Shina sends it herself. Say "Here's the draft" / "ready to go", never "sent". To summarise an email, read_email first. When replying, use reply_to_email_id.
 
-If Shina asks for a "reminder" specifically -- not just a plain schedule item -- use the create_reminder tool, not create_schedule_event. It's the same underlying Schedule item, but calling it directly is what makes it reliably show up on her Reminders list; trying to simulate a reminder by setting create_schedule_event's remind_before_minutes field yourself is fragile and has caused reminders to go missing before. If she doesn't say how far in advance to remind her, leave remind_before_minutes out of create_reminder entirely -- it defaults to notifying her right at the time she gave.
+Current date/time: ${formatted} (Africa/Lagos). Resolve every relative date ("tomorrow", "next Tuesday") against this exact moment. Times are 24h HH:MM; ISO datetimes for Calendar need the +01:00 offset.
 
-When saving a note or a task, pass Shina's own wording through exactly as she said or typed it -- do not fix, rephrase, or substitute her words with different terms, even if they contain typos or seem unusual. If something is genuinely ambiguous, ask rather than guessing at what she meant.
+=== LIVE SNAPSHOT ===
+${dayContext}${memorySection}`;
+}
 
-Never call a tool unless the request genuinely needs external data or an action. When creating calendar events, add a Meet link only if it sounds like a meeting/call. For weather, use the "day" parameter to match what Shina actually asked for (0 = today, 1 = tomorrow, etc.) rather than always answering with today's conditions.
+// --- Reply post-processing -------------------------------------------------
 
-When Shina asks what's on her schedule or calendar for a day other than today ("tomorrow", "next Tuesday", "next week", a specific date), work out the actual YYYY-MM-DD date against the current date/time below and pass it as the date parameter to list_schedule_events -- don't default to today just because she didn't spell out a full date.
+export function splitSuggestions(raw: string): { text: string; suggestions: string[] } {
+  const lines = raw.trim().split("\n");
+  let suggestions: string[] = [];
+  // The NEXT line is usually last, but tolerate trailing blank/markdown lines.
+  for (let i = lines.length - 1; i >= Math.max(0, lines.length - 3); i--) {
+    const m = lines[i].match(/^\s*\**\s*NEXT\s*\**\s*:\s*(.+)$/i);
+    if (m) {
+      suggestions = m[1]
+        .split("|")
+        .map((s) => s.replace(/[*_`"]/g, "").trim())
+        .filter((s) => s.length > 0 && s.length <= 60)
+        .slice(0, 3);
+      lines.splice(i, 1);
+      break;
+    }
+  }
+  return { text: lines.join("\n").trim(), suggestions };
+}
 
-Current date/time: ${formatted} (Africa/Lagos). Resolve all relative dates against this exact moment.${memorySection}`;
+// Catches the model claiming it did something in a turn where no write tool
+// actually succeeded -- v1 avoided this by never showing model text after a
+// tool call at all; v2 shows her words, so it needs this guard instead.
+const CLAIM_RE = /^(done|all set|sorted|got it, (i'?ve|i have))\b|\bi'?ve (added|moved|scheduled|created|deleted|removed|updated|rescheduled|cancelled|canceled|set|booked|marked|sent)\b|\b(has|have) been (sent|added|moved|scheduled|deleted|updated)\b/i;
+
+function guardClaims(text: string, executed: ExecutedCall[]): string {
+  const anyWriteSucceeded = executed.some((c) => {
+    const r = c.result as Record<string, unknown> | null;
+    return WRITE_TOOLS.has(c.name) && !(r && typeof r === "object" && ("error" in r || "skipped" in r));
+  });
+  const drafted = executed.some((c) => c.name === "draft_email" && !(c.result as Record<string, unknown>)?.error);
+  if (anyWriteSucceeded) return text;
+  if (drafted && !/\b(sent|has been sent)\b/i.test(text)) return text;
+  if (!CLAIM_RE.test(text)) return text;
+  console.warn("CeeBee: model claimed an action with no successful write tool -- replacing reply", text);
+  return "I haven't actually changed anything yet. Want me to go ahead?";
 }
 
 // --- Main entry point ---------------------------------------------------
 
 export async function runAgent(
   userMessage: string,
-  refreshToken: string,
+  accounts: GoogleAccount[],
   history: HistoryMessage[] = [],
-  location: { lat: number; lon: number } | null = null
-) {
+  location: { lat: number; lon: number } | null = null,
+  accountLabel: string | null = null
+): Promise<AgentReply> {
   const model = await getCurrentModel();
   const provider = providerForModel(model);
 
   const allowed = await checkRateLimit(provider);
   if (!allowed) {
-    return `CeeBee's temporarily busy (hit her ${provider === "gemini" ? "Gemini" : "Groq"} request limit) — try again in a moment.`;
+    return {
+      text: `I'm a bit swamped right now (hit my ${provider === "gemini" ? "Gemini" : "Groq"} request limit). Give me a moment and try again.`,
+      cards: [],
+      suggestions: [],
+    };
   }
 
+  const primary = pickAccount(accounts, accountLabel);
   const recentHistory = history.slice(-8);
-  const tools = selectTools(userMessage);
-  const systemPrompt = await buildSystemPrompt(userMessage);
+
+  const [ctx, facts] = await Promise.all([
+    buildDayContext(primary, location),
+    getRelevantMemoryFacts(userMessage),
+  ]);
+  const env: ToolEnv = { accounts, primary, location, weather: ctx.weather };
+
+  const tools = selectTools(userMessage, recentHistory);
+  const systemPrompt = buildSystemPrompt(describeDayContext(ctx, accounts), facts);
   const useReasoning = needsDeepReasoning(userMessage);
 
   const start = Date.now();
   const result =
     provider === "gemini"
-      ? await callGemini(model, systemPrompt, recentHistory, userMessage, tools, refreshToken, location)
-      : await callGroq(model, systemPrompt, recentHistory, userMessage, tools, useReasoning, refreshToken, location);
+      ? await callGemini(model, systemPrompt, recentHistory, userMessage, tools, env)
+      : await callGroq(model, systemPrompt, recentHistory, userMessage, tools, useReasoning, env);
   const latencyMs = Date.now() - start;
 
+  // Usage logging must never cost Shina her answer.
   await logUsage({
     model,
     promptTokens: result.usage.promptTokens,
@@ -1014,64 +1269,83 @@ export async function runAgent(
     totalTokens: result.usage.totalTokens,
     toolCalls: result.executed.length,
     latencyMs,
-  });
+  }).catch((err) => console.error("logUsage failed", err));
 
-  if (result.executed.length === 0) {
-    return result.text || "I didn't quite catch what you needed there -- could you rephrase?";
-  }
-
-  const summaries: string[] = [];
   for (const call of result.executed) {
-    const r = call.result as Record<string, unknown> | null | undefined;
+    const r = call.result as Record<string, unknown> | null;
     if (r && typeof r === "object" && "skipped" in r) {
-      // Duplicate call caught by dedup -- don't clutter the reply with it,
-      // just skip silently (server logs still show it happened).
       console.warn(`CeeBee: skipped duplicate tool call ${call.name}`, call.args);
-      continue;
     }
-    if (r && typeof r === "object" && "error" in r) {
-      summaries.push(`Couldn't complete that (${call.name.replace(/_/g, " ")}): ${r.error}`);
-      continue;
-    }
-    summaries.push(formatLocally(call.name, call.args, call.result));
   }
 
-  return summaries.length > 0 ? summaries.join("\n\n") : "Done.";
+  const cards = buildCards(result.executed);
+  const { text: rawText, suggestions } = splitSuggestions(result.text);
+  let text = guardClaims(rawText, result.executed);
+
+  if (!text) {
+    // Ran out of tool rounds, or the model only called tools. Fall back to
+    // the receipts so she still hears what happened.
+    const receipts = cards.find((c) => c.type === "actions");
+    text = receipts && receipts.type === "actions"
+      ? receipts.items.map((i) => i.text).join(". ") + "."
+      : cards.length
+        ? "Here you go."
+        : "I didn't quite catch what you needed there -- could you rephrase?";
+  }
+
+  return { text, cards, suggestions };
 }
 
-// --- Conversation titling -------------------------------------------------
-// Generates a short (3-6 word) summary title from the first exchange, the
-// same way Gemini/ChatGPT rename a chat after your first message instead of
-// just truncating it. Runs once, after the first reply, and is best-effort:
-// if it fails (rate limit, etc.) the caller just keeps whatever title it
-// already set (the old truncated-message fallback), so a failure here never
-// breaks the conversation itself.
-export async function generateConversationTitle(userMessage: string, reply: string): Promise<string | null> {
-  const model = await getCurrentModel();
+// --- Plain completions (titles, briefs, inbox triage) -----------------------
+// One-shot, no tools. Returns null on any failure so callers can fall back
+// to something deterministic -- these are nice-to-haves, never blockers.
+
+// `preferModel` pins a specific model (e.g. the morning brief always thinks
+// with Gemini); if that model fails or is out of quota, it falls back to
+// whatever chat model is selected, so the caller still gets an answer.
+export async function completeText(
+  prompt: string,
+  maxTokens = 200,
+  opts: { preferModel?: string } = {}
+): Promise<string | null> {
+  if (opts.preferModel) {
+    const preferred = await completeWithModel(opts.preferModel, prompt, maxTokens);
+    if (preferred) return preferred;
+    console.warn(`completeText: ${opts.preferModel} unavailable, falling back to the chat model`);
+  }
+  return completeWithModel(await getCurrentModel(), prompt, maxTokens);
+}
+
+async function completeWithModel(model: string, prompt: string, maxTokens: number): Promise<string | null> {
   const provider = providerForModel(model);
-  const prompt = `Summarize this exchange as a short chat title, 3-6 words, no quotes, no trailing punctuation, no emoji.\n\nUser: ${userMessage}\nAssistant: ${reply}\n\nTitle:`;
+  if (!(await checkRateLimit(provider))) {
+    console.error("completeText: rate limited");
+    return null;
+  }
 
   try {
     if (provider === "gemini") {
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey) {
-        console.error("generateConversationTitle: missing GEMINI_API_KEY");
+        console.error("completeText: missing GEMINI_API_KEY");
         return null;
       }
       const ai = new GoogleGenAI({ apiKey });
       const response = await ai.models.generateContent({
         model,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
-        config: { thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }, maxOutputTokens: 40 },
+        config: { thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }, maxOutputTokens: maxTokens + 400 },
       });
-      const title = cleanTitle(response.text ?? "");
-      if (!title) console.error("generateConversationTitle: Gemini returned empty/unusable text", response.text);
-      return title;
+      if (response.candidates?.[0]?.finishReason === "MAX_TOKENS") {
+        console.error("completeText: Gemini reply truncated (MAX_TOKENS)");
+        return null;
+      }
+      return response.text?.trim() || null;
     }
 
     const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) {
-      console.error("generateConversationTitle: missing GROQ_API_KEY");
+      console.error("completeText: missing GROQ_API_KEY");
       return null;
     }
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -1081,32 +1355,51 @@ export async function generateConversationTitle(userMessage: string, reply: stri
         model,
         messages: [{ role: "user", content: prompt }],
         // GPT-OSS is a reasoning model -- even with include_reasoning:false
-        // suppressing the *visible* trace, it can still spend part of its
-        // token budget reasoning internally before writing the actual
-        // answer. 20 was too tight and likely produced empty content,
-        // which is indistinguishable from a real failure with no logging --
-        // exactly the bug this whole function had.
-        max_tokens: 60,
+        // its hidden reasoning spends from max_tokens before the answer is
+        // written, which cut the morning brief off mid-sentence. Keep the
+        // reasoning effort low and leave generous headroom on top of the
+        // answer budget.
+        max_tokens: maxTokens + 800,
+        reasoning_effort: "low",
         include_reasoning: false,
       }),
     });
     if (!res.ok) {
-      console.error("generateConversationTitle: Groq API error", res.status, await res.text());
+      console.error("completeText: Groq API error", res.status, await res.text());
       return null;
     }
     const data = await res.json();
-    const title = cleanTitle(data.choices?.[0]?.message?.content ?? "");
-    if (!title) console.error("generateConversationTitle: Groq returned empty/unusable content", JSON.stringify(data.choices?.[0]));
-    return title;
+    const choice = data.choices?.[0];
+    // A cut-off answer is worse than none -- let the caller fall back.
+    if (choice?.finish_reason === "length") {
+      console.error("completeText: Groq reply truncated (finish_reason=length)");
+      return null;
+    }
+    return (choice?.message?.content ?? "").trim() || null;
   } catch (err) {
-    // Best-effort -- a titling failure should never surface to the user,
-    // but it should at least be visible in the logs instead of vanishing.
-    console.error("generateConversationTitle: unexpected error", err);
+    console.error("completeText: unexpected error", err);
     return null;
   }
 }
 
+// --- Conversation titling -------------------------------------------------
+// Generates a short (3-6 word) title from the first exchange, the way
+// Gemini/ChatGPT rename a chat after your first message. Best-effort: on
+// failure the caller keeps its placeholder title.
+export async function generateConversationTitle(userMessage: string, reply: string): Promise<string | null> {
+  const prompt = `Summarize this exchange as a short chat title, 3-6 words, no quotes, no trailing punctuation, no emoji.\n\nUser: ${userMessage}\nAssistant: ${reply}\n\nTitle:`;
+  const raw = await completeText(prompt, 60);
+  if (!raw) {
+    console.error("generateConversationTitle: no title produced");
+    return null;
+  }
+  return cleanTitle(raw);
+}
+
 function cleanTitle(raw: string): string | null {
-  const cleaned = raw.trim().replace(/^["']|["']$/g, "").replace(/[.!]+$/, "");
+  const firstLine = raw.split("\n").find((l) => l.trim()) ?? "";
+  const cleaned = firstLine.trim().replace(/^title:\s*/i, "").replace(/^["']|["']$/g, "").replace(/[.!]+$/, "");
   return cleaned.length > 0 ? cleaned.slice(0, 60) : null;
 }
+
+export type { DayContext };

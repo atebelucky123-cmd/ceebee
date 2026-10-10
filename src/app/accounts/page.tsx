@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import VoicePicker from "../components/VoicePicker";
 
 type Account = { email: string; label: string };
 
@@ -42,11 +43,13 @@ export default function AccountsPage() {
 
   return (
     <div className="flex flex-col flex-1 min-h-0 w-full overflow-y-auto">
-      <header className="px-4 py-3 border-b border-neutral-800">
-        <h1 className="font-semibold text-lg">Accounts</h1>
+      <header className="px-4 pt-[max(1.75rem,env(safe-area-inset-top))] lg:pt-9 pb-3 flex items-center gap-3">
+        <h1 className="font-display font-extrabold text-[32px] lg:text-[40px] tracking-tight leading-none flex-1">Accounts</h1>
       </header>
 
       <main className="flex-1 px-4 py-4 space-y-3">
+        <VoicePicker />
+        <h2 className="text-[17px] font-bold pt-4">Google accounts</h2>
         {accounts === null ? (
           <div className="text-neutral-500 text-sm text-center py-8">
             Loading…
