@@ -108,10 +108,10 @@ export default function TodayPage() {
       <main className="flex-1 min-w-0 overflow-y-auto">
         {/* ---------- Desktop ---------- */}
         <div className="hidden lg:flex flex-col gap-7 px-10 py-9 min-h-full">
-          <div className="flex justify-between items-end gap-6">
+          <div className="flex flex-wrap justify-between items-end gap-x-6 gap-y-4">
             <div className="flex flex-col gap-1.5 min-w-0">
               <div className="font-mono text-[13px] text-muted">{brief?.dateLabel ?? " "}</div>
-              <h1 className="m-0 font-display font-extrabold text-[44px] tracking-tight leading-none truncate">
+              <h1 className="m-0 font-display font-extrabold text-[36px] 2xl:text-[44px] tracking-tight leading-[1.05]">
                 {brief?.greeting ?? "Hello, Shina"}
               </h1>
             </div>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { CalendarIcon } from "./Icons";
 
 // A self-built calendar dropdown, used everywhere a date is picked
 // (Schedule tab, Add Event, Reminders) instead of the native
@@ -67,15 +68,18 @@ export default function DatePicker({
   const [viewMonth, setViewMonth] = useState(parsed.month);
 
   // Jump the visible month back to match `value` whenever the picker is
-  // (re)opened, so it doesn't stay stuck wherever you last scrolled it.
-  useEffect(() => {
-    if (!open) return;
-    const p = parseDateKey(value);
-    if (p) {
-      setViewYear(p.year);
-      setViewMonth(p.month);
+  // opened, so it doesn't stay stuck wherever you last scrolled it. Done in
+  // the click handler rather than an effect, so it's a single render.
+  function toggleOpen() {
+    if (!open) {
+      const p = parseDateKey(value);
+      if (p) {
+        setViewYear(p.year);
+        setViewMonth(p.month);
+      }
     }
-  }, [open, value]);
+    setOpen((o) => !o);
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -115,11 +119,12 @@ export default function DatePicker({
     <div ref={containerRef} className={`relative ${className}`}>
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggleOpen}
+        aria-expanded={open}
         className="w-full bg-neutral-800 rounded-lg px-3 py-2.5 text-sm text-left outline-none focus:ring-2 focus:ring-amber-400 flex items-center justify-between"
       >
         <span>{formatDisplay(value)}</span>
-        <span className="text-neutral-500">📅</span>
+        <CalendarIcon size={18} className="text-muted shrink-0" />
       </button>
 
       {open && (

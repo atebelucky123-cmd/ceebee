@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import AddEventForm from "../AddEventForm";
 import DatePicker from "../DatePicker";
 import PriorityPill from "./Priority";
-import { VideoIcon } from "../Icons";
+import { BellIcon, VideoIcon } from "../Icons";
 
 export type ScheduleEvent = {
   id: string;
@@ -244,7 +244,10 @@ export default function ScheduleManager({
                   <div className="flex gap-3 mt-1.5 ml-16 text-xs text-muted items-center flex-wrap">
                     {e.end_time && <span className="font-mono">until {e.end_time.slice(0, 5)}</span>}
                     {e.remind_before_minutes !== null && (
-                      <span>⏰ {e.remind_before_minutes === 0 ? "at start" : `${e.remind_before_minutes}m before`}</span>
+                      <span className="inline-flex items-center gap-1">
+                        <BellIcon size={13} className="text-honey" />
+                        {e.remind_before_minutes === 0 ? "at start" : `${e.remind_before_minutes}m before`}
+                      </span>
                     )}
                     {e.meeting_link && (
                       <a href={e.meeting_link} target="_blank" rel="noopener noreferrer" className="text-honey font-semibold">

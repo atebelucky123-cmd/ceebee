@@ -1,5 +1,6 @@
 "use client";
 
+import { CheckIcon } from "../components/Icons";
 import { useEffect, useState } from "react";
 
 function urlBase64ToUint8Array(base64String: string) {
@@ -130,7 +131,11 @@ export default function DevToolsPage() {
             className="w-full bg-amber-400 text-neutral-950 rounded-xl py-3 text-sm font-medium disabled:opacity-50"
           >
             {pushStatus === "enabled"
-              ? "Notifications enabled ✓"
+              ? (
+                  <span className="inline-flex items-center justify-center gap-2">
+                    <CheckIcon size={16} /> Notifications enabled
+                  </span>
+                )
               : pushStatus === "enabling"
               ? "Enabling…"
               : pushStatus === "error"
