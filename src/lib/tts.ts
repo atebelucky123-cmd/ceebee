@@ -5,7 +5,7 @@ import { createHash } from "crypto";
 // app already has) so she sounds like a person. The client falls back to
 // the browser voice only if this fails.
 
-import { CEEBEE_VOICES, DEFAULT_VOICE } from "@/lib/voices";
+import { CEEBEE_VOICES, DEFAULT_VOICE, respellForSpeech } from "@/lib/voices";
 
 // Fastest first. The lite model returns a ~10s clip in ~4s; the others are
 // fallbacks if a model is unavailable or rate-limited on the account.
@@ -54,7 +54,7 @@ export async function synthesizeSpeech(rawText: string, voice: string = DEFAULT_
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("Missing GEMINI_API_KEY");
 
-  const text = cleanForSpeech(rawText);
+  const text = respellForSpeech(cleanForSpeech(rawText));
   if (!text) throw new Error("Nothing to say");
   const voiceName = CEEBEE_VOICES.some((v) => v.id === voice) ? voice : DEFAULT_VOICE;
 

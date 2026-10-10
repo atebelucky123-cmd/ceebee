@@ -8,6 +8,8 @@
 // Fallback: the browser's built-in voice -- robotic, but better than
 // silence when offline or the TTS quota is spent.
 
+import { respellForSpeech } from "@/lib/voices";
+
 export const VOICE_KEY = "ceebee-voice";
 export const VOICE_CHANGED_EVENT = "ceebee:voice-changed";
 export const SPEAKING_EVENT = "ceebee:speaking";
@@ -138,6 +140,7 @@ export function stopSpeaking() {
 
 function speakWithBrowser(text: string) {
   if (!window.speechSynthesis) return;
+  text = respellForSpeech(text);
   const voices = window.speechSynthesis.getVoices();
   const us = voices.filter((v) => v.lang?.startsWith("en-US"));
   const voice =

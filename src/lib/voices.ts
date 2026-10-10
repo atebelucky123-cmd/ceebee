@@ -10,3 +10,20 @@ export const CEEBEE_VOICES = [
 ] as const;
 
 export const DEFAULT_VOICE = "Aoede"; // the one who says "Shina" right
+
+// How CeeBee should *say* names that text-to-speech gets wrong. Applied only
+// to spoken audio -- the screen still shows the real spelling. Google's
+// voices don't accept phonetic (IPA) input, and telling the voice how to
+// pronounce a name in its style prompt makes it read the instructions aloud,
+// so names are respelled the way they sound instead.
+// Shina = Yoruba Ṣínà, /ʃí.nā/: "sh" as in shoe, higher pitch on the first syllable.
+export const PRONUNCIATIONS: Record<string, string> = {
+  Shina: "Shee-nah",
+};
+
+export function respellForSpeech(text: string): string {
+  return Object.entries(PRONUNCIATIONS).reduce(
+    (out, [name, spoken]) => out.replace(new RegExp(`\b${name}\b`, "gi"), spoken),
+    text
+  );
+}
