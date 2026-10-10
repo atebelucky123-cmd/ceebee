@@ -1,5 +1,5 @@
 import { listRecentEmails } from "@/lib/gmail";
-import type { GoogleAccount } from "@/lib/accounts";
+import { isReconnectError, type GoogleAccount } from "@/lib/accounts";
 
 export type InboxEmail = {
   id: string;
@@ -14,21 +14,28 @@ export type InboxEmail = {
   accountLabel: string;
 };
 
-// Recent inbox mail across every connected account, newest first. Mirrors
-// what GET /api/emails does, as a shared function the brief and the inbox
-// triage can call directly.
-export async function listInboxAcrossAccounts(accounts: GoogleAccount[], perAccount = 10): Promise<InboxEmail[]> {
+// Recent inbox mail across every connected account, newest first, plus the
+// labels of accounts whose Google connection has expired -- so callers can
+// say "reconnect Personal" instead of showing a falsely empty inbox.
+export async function listInboxAcrossAccounts(
+  accounts: GoogleAccount[],
+  perAccount = 10
+): Promise<{ emails: InboxEmail[]; reconnect: string[] }> {
+  const reconnect: string[] = [];
   const results = await Promise.all(
     accounts.map(async (acc) => {
       try {
         const emails = await listRecentEmails(acc.refresh_token, perAccount);
         return emails.map((e) => ({ ...e, id: e.id ?? "", accountEmail: acc.email, accountLabel: acc.label }));
-      } catch {
+      } catch (err) {
+        if (isReconnectError(err)) reconnect.push(acc.label);
+        else console.error(`Inbox: couldn't load ${acc.label}`, err);
         return [];
       }
     })
   );
-  return results.flat().sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  const emails = results.flat().sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  return { emails, reconnect };
 }
 
 export function senderName(from: string): string {

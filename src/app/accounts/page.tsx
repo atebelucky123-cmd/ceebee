@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import VoicePicker from "../components/VoicePicker";
 
-type Account = { email: string; label: string };
+type Account = { email: string; label: string; status?: "ok" | "reconnect" | "error" };
 
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<Account[] | null>(null);
@@ -88,16 +88,33 @@ export default function AccountsPage() {
                     className="bg-neutral-800 rounded px-2 py-1 text-xs mt-1 outline-none focus:ring-1 focus:ring-amber-400"
                   />
                 ) : (
-                  <div className="text-xs text-neutral-500">{a.label}</div>
+                  <div className="text-xs text-neutral-500 flex items-center gap-2">
+                    {a.label}
+                    {a.status === "ok" && <span className="text-honey font-semibold">· Connected</span>}
+                    {a.status === "reconnect" && <span className="text-ember font-semibold">· Needs reconnecting</span>}
+                    {a.status === "error" && <span className="text-muted">· Couldn&apos;t check</span>}
+                  </div>
                 )}
               </div>
               {editing !== a.email && (
-                <button
-                  onClick={() => startEditing(a)}
-                  className="bg-neutral-800 text-neutral-300 text-xs px-3 py-1.5 rounded-full shrink-0"
-                >
-                  Rename
-                </button>
+                <div className="flex gap-2 shrink-0">
+                  {a.status === "reconnect" && (
+                    // Reconnecting keeps this account's nickname (see the
+                    // OAuth callback), so Personal stays Personal.
+                    <a
+                      href={`/api/auth/google?label=${encodeURIComponent(a.label)}`}
+                      className="bg-honey text-ground text-xs font-semibold px-3 py-1.5 rounded-full"
+                    >
+                      Reconnect
+                    </a>
+                  )}
+                  <button
+                    onClick={() => startEditing(a)}
+                    className="bg-neutral-800 text-neutral-300 text-xs px-3 py-1.5 rounded-full"
+                  >
+                    Rename
+                  </button>
+                </div>
               )}
             </div>
           ))

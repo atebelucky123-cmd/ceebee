@@ -1,13 +1,16 @@
 import { NextResponse } from "next/server";
-import { getSupabaseServerClient } from "@/lib/supabase";
+import { getAccounts, checkAccountConnection } from "@/lib/accounts";
 
+// Connected Google accounts, each with whether its connection still works
+// ("reconnect" = Google expired or revoked it; tap Reconnect to fix).
 export async function GET() {
-  const supabase = getSupabaseServerClient();
-  const { data, error } = await supabase
-    .from("google_accounts")
-    .select("email, label")
-    .order("created_at", { ascending: true });
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ accounts: data });
+  try {
+    const accounts = await getAccounts();
+    const withStatus = await Promise.all(
+      accounts.map(async (a) => ({ email: a.email, label: a.label, status: await checkAccountConnection(a) }))
+    );
+    return NextResponse.json({ accounts: withStatus });
+  } catch (err) {
+    return NextResponse.json({ error: err instanceof Error ? err.message : "Unknown error" }, { status: 500 });
+  }
 }

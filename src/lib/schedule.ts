@@ -54,20 +54,62 @@ export async function createScheduleEvent(input: CreateScheduleEventInput) {
   return { event: first, occurrences: data?.length ?? 0 };
 }
 
-export async function listScheduleEvents(date?: string, sort: "time" | "priority" = "time") {
+export type ScheduleSort = "time" | "priority" | "custom";
+
+// "custom" = Shina's own order (sort_order, set by the up/down arrows).
+// sort_order is also the tiebreaker for untimed items in the other sorts.
+// If the sort_order column hasn't been added to the database yet (see
+// supabase/schema.sql), this quietly falls back to ordering without it.
+export async function listScheduleEvents(date?: string, sort: ScheduleSort = "time") {
   const supabase = getSupabaseServerClient();
-  let query = supabase.from("schedule_events").select("*");
-  if (date) query = query.eq("event_date", date);
+  const run = async (withCustomOrder: boolean) => {
+    let query = supabase.from("schedule_events").select("*");
+    if (date) query = query.eq("event_date", date);
+    if (sort === "custom" && withCustomOrder) {
+      query = query.order("sort_order", { ascending: true, nullsFirst: false });
+    }
+    if (sort === "priority") {
+      // 5 = urgent, so most important first.
+      query = query.order("priority", { ascending: false });
+    }
+    query = query.order("start_time", { ascending: true, nullsFirst: false });
+    if (withCustomOrder) query = query.order("sort_order", { ascending: true, nullsFirst: false });
+    return query.order("created_at", { ascending: true });
+  };
 
-  query =
-    sort === "priority"
-      ? // 5 = urgent, so most important first.
-        query.order("priority", { ascending: false }).order("start_time", { ascending: true, nullsFirst: false })
-      : query.order("start_time", { ascending: true, nullsFirst: false });
-
-  const { data, error } = await query;
+  let { data, error } = await run(true);
+  if (error && /sort_order/.test(error.message)) ({ data, error } = await run(false));
   if (error) throw new Error(error.message);
   return data ?? [];
+}
+
+// Saves a day's custom order. Each item's position also applies to every
+// future occurrence in its repeating series, so a morning routine stays in
+// the order she set it.
+export async function reorderScheduleEvents(date: string, orderedIds: string[]) {
+  const supabase = getSupabaseServerClient();
+  const { data: rows, error } = await supabase
+    .from("schedule_events")
+    .select("id, series_id")
+    .in("id", orderedIds);
+  if (error) throw new Error(error.message);
+
+  const seriesOf = new Map((rows ?? []).map((r) => [r.id, r.series_id as string | null]));
+  for (const [index, id] of orderedIds.entries()) {
+    const seriesId = seriesOf.get(id);
+    const q = seriesId
+      ? supabase.from("schedule_events").update({ sort_order: index }).eq("series_id", seriesId).gte("event_date", date)
+      : supabase.from("schedule_events").update({ sort_order: index }).eq("id", id);
+    const { error: updateError } = await q;
+    if (updateError) {
+      throw new Error(
+        /sort_order/.test(updateError.message)
+          ? "Custom order needs one database update first: run the sort_order line from supabase/schema.sql in Supabase's SQL editor."
+          : updateError.message
+      );
+    }
+  }
+  return { success: true };
 }
 
 // Updates one existing schedule row -- only the fields actually passed are

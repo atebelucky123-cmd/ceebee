@@ -3,7 +3,7 @@ import { getAccounts, pickAccount } from "@/lib/accounts";
 import { buildDayContext } from "@/lib/context";
 import { listInboxAcrossAccounts, senderName } from "@/lib/inbox";
 import { completeText, splitSuggestions } from "@/lib/agent";
-import { BRIEF_MODEL } from "@/lib/settings";
+import { SUMMARY_MODEL } from "@/lib/settings";
 import { spokenTime } from "@/lib/insights";
 import { eyebrowDate, lagosParts } from "@/lib/time";
 
@@ -16,8 +16,8 @@ import { eyebrowDate, lagosParts } from "@/lib/time";
 const briefCache = new Map<string, { at: number; message: string; suggestions: string[] }>();
 // The cache key only changes when the day itself changes (a new email, a
 // ticked task, a moved event, a new part of the day), so the brief model
-// -- Gemini, 20 free requests/day -- is called a handful of times a day,
-// not on every 5-minute refresh. The TTL is just a safety net.
+// is called a handful of times a day, not on every 5-minute refresh. The TTL
+// is just a safety net.
 const BRIEF_TTL_MS = 3 * 60 * 60_000;
 
 function greetingFor(hour: number) {
@@ -37,11 +37,20 @@ export async function GET(req: NextRequest) {
 
     const [ctx, inbox] = await Promise.all([
       buildDayContext(primary, location),
-      listInboxAcrossAccounts(accounts, 6).catch(() => []),
+      listInboxAcrossAccounts(accounts, 6).catch(() => ({ emails: [], reconnect: [] as string[] })),
     ]);
 
     const now = lagosParts();
-    const unread = inbox.filter((e) => e.unread);
+    const unread = inbox.emails.filter((e) => e.unread);
+    // Expired Google connections get a visible nudge rather than an inbox
+    // that just looks empty.
+    if (inbox.reconnect.length) {
+      ctx.insights.unshift({
+        id: "reconnect-google",
+        tone: "ember",
+        text: `Your ${inbox.reconnect.join(" and ")} Google ${inbox.reconnect.length === 1 ? "account needs" : "accounts need"} reconnecting, so I can't see that email or calendar. Reconnect on the Accounts page.`,
+      });
+    }
     const openTasks = ctx.tasks.filter((t) => !t.done);
     const doneTasks = ctx.tasks.length - openTasks.length;
     const remaining = ctx.today.filter((i) => !i.done && !i.cleared && (!i.start || i.start >= now.hhmm));
@@ -65,7 +74,9 @@ export async function GET(req: NextRequest) {
         : "Nothing else timed today.",
       `${remaining.length} things left on today's plan: ${remaining.map((i) => `${i.start ?? "anytime"} ${i.title}`).join("; ") || "none"}.`,
       `${openTasks.length} open tasks, ${doneTasks} done.`,
-      unread.length
+      inbox.reconnect.length
+        ? `Email unavailable: ${inbox.reconnect.join(", ")} needs reconnecting (don't claim the inbox is empty).`
+        : unread.length
         ? `${unread.length} unread emails, e.g. ${unread.slice(0, 3).map((e) => `${senderName(e.from)}: "${e.subject}"`).join("; ")}.`
         : "Inbox: nothing unread.",
       ctx.weather ? `Weather: ${ctx.weather.currentTemp}°C, ${ctx.weather.condition.toLowerCase()}. ${weatherNote}.` : "",
@@ -81,7 +92,7 @@ Then on a final line write: NEXT: <1-3 short tappable replies Shina might tap, s
 
 Facts:
 ${facts.join("\n")}`;
-      const raw = await completeText(prompt, 220, { preferModel: BRIEF_MODEL });
+      const raw = await completeText(prompt, 220, { preferModel: SUMMARY_MODEL });
       const parsed = raw ? splitSuggestions(raw) : null;
       const fallbackSuggestions = ctx.insights.filter((i) => i.action).map((i) => i.action!.label);
       cached = {

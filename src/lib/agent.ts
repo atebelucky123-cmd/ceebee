@@ -19,8 +19,8 @@ import { buildDayContext, describeDayContext, type DayContext } from "@/lib/cont
 import { getRelevantMemoryFacts, addMemoryFact } from "@/lib/memory";
 import { checkRateLimit } from "@/lib/rateLimit";
 import { logUsage } from "@/lib/usageLog";
-import { getCurrentModel, providerForModel } from "@/lib/settings";
-import { pickAccount, type GoogleAccount } from "@/lib/accounts";
+import { getCurrentModel, providerForModel, SUMMARY_MODEL } from "@/lib/settings";
+import { isReconnectError, pickAccount, type GoogleAccount } from "@/lib/accounts";
 import { labelForKey, lagosParts, toMinutes } from "@/lib/time";
 import { cardsDigest, type AgentReply, type Card, type AgendaCardItem } from "@/lib/cards";
 import type { FullWeatherData } from "@/lib/weather";
@@ -883,7 +883,13 @@ async function runToolOnce(
     try {
       result = await executeTool(call.name, args, env);
     } catch (err) {
-      result = { error: err instanceof Error ? err.message : "Unknown error" };
+      result = {
+        error: isReconnectError(err)
+          ? "Google has disconnected this account (its sign-in expired). Shina needs to tap Reconnect on the Accounts page."
+          : err instanceof Error
+            ? err.message
+            : "Unknown error",
+      };
     }
   }
   executed.push({ name: call.name, args, result });
@@ -1323,6 +1329,14 @@ async function completeWithModel(model: string, prompt: string, maxTokens: numbe
     return null;
   }
 
+  // Summaries count toward the same quotas as chat, so they're logged too --
+  // previously only chat turns were, which made Developer tools undercount.
+  const start = Date.now();
+  const log = (usage: { promptTokens?: number; outputTokens?: number; totalTokens?: number }) =>
+    logUsage({ model, ...usage, toolCalls: 0, latencyMs: Date.now() - start }).catch((err) =>
+      console.error("logUsage failed", err)
+    );
+
   try {
     if (provider === "gemini") {
       const apiKey = process.env.GEMINI_API_KEY;
@@ -1335,6 +1349,11 @@ async function completeWithModel(model: string, prompt: string, maxTokens: numbe
         model,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         config: { thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL }, maxOutputTokens: maxTokens + 400 },
+      });
+      await log({
+        promptTokens: response.usageMetadata?.promptTokenCount,
+        outputTokens: response.usageMetadata?.candidatesTokenCount,
+        totalTokens: response.usageMetadata?.totalTokenCount,
       });
       if (response.candidates?.[0]?.finishReason === "MAX_TOKENS") {
         console.error("completeText: Gemini reply truncated (MAX_TOKENS)");
@@ -1369,6 +1388,11 @@ async function completeWithModel(model: string, prompt: string, maxTokens: numbe
       return null;
     }
     const data = await res.json();
+    await log({
+      promptTokens: data.usage?.prompt_tokens,
+      outputTokens: data.usage?.completion_tokens,
+      totalTokens: data.usage?.total_tokens,
+    });
     const choice = data.choices?.[0];
     // A cut-off answer is worse than none -- let the caller fall back.
     if (choice?.finish_reason === "length") {
@@ -1388,7 +1412,7 @@ async function completeWithModel(model: string, prompt: string, maxTokens: numbe
 // failure the caller keeps its placeholder title.
 export async function generateConversationTitle(userMessage: string, reply: string): Promise<string | null> {
   const prompt = `Summarize this exchange as a short chat title, 3-6 words, no quotes, no trailing punctuation, no emoji.\n\nUser: ${userMessage}\nAssistant: ${reply}\n\nTitle:`;
-  const raw = await completeText(prompt, 60);
+  const raw = await completeText(prompt, 60, { preferModel: SUMMARY_MODEL });
   if (!raw) {
     console.error("generateConversationTitle: no title produced");
     return null;

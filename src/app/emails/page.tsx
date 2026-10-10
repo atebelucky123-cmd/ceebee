@@ -71,6 +71,8 @@ export default function InboxPage() {
   const [sending, setSending] = useState(false);
   const [sentIds, setSentIds] = useState<Set<string>>(new Set());
   const [countsByLabel, setCountsByLabel] = useState<Record<string, number>>({});
+  // Accounts whose Google connection expired -- shown as a Reconnect banner.
+  const [reconnect, setReconnect] = useState<string[]>([]);
 
   useEffect(() => {
     fetch("/api/accounts")
@@ -85,6 +87,7 @@ export default function InboxPage() {
       .then((data) => {
         const list: Email[] = data.emails ?? [];
         setEmails(list);
+        setReconnect(data.reconnect ?? []);
         // Per-account unread counts come from the unfiltered list.
         if (!filter) {
           const counts: Record<string, number> = {};
@@ -210,6 +213,21 @@ export default function InboxPage() {
           )}
         </div>
 
+        {reconnect.length > 0 && (
+          <div className="p-4 rounded-[18px] border border-ember/50 bg-ember/10 flex flex-wrap items-center gap-3">
+            <span className="text-[15px] flex-1 min-w-[12rem]">
+              Google disconnected your <strong>{reconnect.join(" and ")}</strong>{" "}
+              {reconnect.length === 1 ? "account" : "accounts"}, so I can&apos;t load that email.
+            </span>
+            <a
+              href="/accounts"
+              className="h-9 px-4 rounded-[10px] bg-honey text-ground text-[13px] font-semibold flex items-center"
+            >
+              Reconnect
+            </a>
+          </div>
+        )}
+
         {loading ? (
           <div className="flex flex-col gap-3">
             {[0, 1, 2, 3].map((i) => (
@@ -217,7 +235,9 @@ export default function InboxPage() {
             ))}
           </div>
         ) : emails.length === 0 ? (
-          <div className="text-muted text-sm text-center py-8">No emails here. Connect a Google account on the Accounts page.</div>
+          <div className="text-muted text-sm text-center py-8">
+            {reconnect.length ? "Reconnect your account to see your email here." : "No emails here. Connect a Google account on the Accounts page."}
+          </div>
         ) : (
           <div className="flex flex-col">
             {emails.map((e, idx) => {

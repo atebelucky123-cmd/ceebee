@@ -4,7 +4,7 @@ import type { Recurrence } from "@/lib/recurrence";
 
 export async function GET(req: NextRequest) {
   const date = req.nextUrl.searchParams.get("date") ?? undefined; // YYYY-MM-DD
-  const sort = (req.nextUrl.searchParams.get("sort") as "time" | "priority") ?? "time";
+  const sort = (req.nextUrl.searchParams.get("sort") as "time" | "priority" | "custom") ?? "time";
 
   try {
     const events = await listScheduleEvents(date, sort);

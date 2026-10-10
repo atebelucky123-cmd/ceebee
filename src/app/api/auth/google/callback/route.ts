@@ -36,10 +36,21 @@ export async function GET(req: NextRequest) {
   const { data: profile } = await oauth2.userinfo.get();
 
   const supabase = getSupabaseServerClient();
+
+  // Reconnecting an account that already exists keeps its nickname
+  // ("Personal", "Business") instead of overwriting it with the generic
+  // label the Connect button sends.
+  const { data: existing } = await supabase
+    .from("google_accounts")
+    .select("label")
+    .eq("email", profile.email)
+    .maybeSingle();
+  const finalLabel = existing?.label && ["default", "new-account"].includes(label) ? existing.label : label;
+
   const { error } = await supabase.from("google_accounts").upsert(
     {
       email: profile.email,
-      label,
+      label: finalLabel,
       refresh_token: tokens.refresh_token,
       updated_at: new Date().toISOString(),
     },
@@ -54,6 +65,6 @@ export async function GET(req: NextRequest) {
   }
 
   return NextResponse.redirect(
-    new URL(`/?connected=${profile.email}`, req.nextUrl.origin)
+    new URL(`/accounts?connected=${encodeURIComponent(profile.email ?? "")}`, req.nextUrl.origin)
   );
 }

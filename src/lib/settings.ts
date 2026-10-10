@@ -10,10 +10,11 @@ export const AVAILABLE_MODELS = [
 
 const DEFAULT_MODEL = "openai/gpt-oss-120b";
 
-// The morning brief always thinks with Gemini (same provider as her voice),
-// regardless of the chat model picked in Developer tools. Free tier is
-// 20 requests/day, so /api/brief only calls it when the day actually changes.
-export const BRIEF_MODEL = "gemini-3.6-flash";
+// Background summaries (the Today brief, inbox triage, chat titles) always
+// run on Groq: they fire on page loads, and Gemini's free tier (20/day for
+// 3.6 Flash) ran out within hours. Gemini is reserved for CeeBee's voice,
+// and for chat only when it's picked in Developer tools.
+export const SUMMARY_MODEL = "openai/gpt-oss-120b";
 
 export async function getCurrentModel(): Promise<string> {
   const supabase = getSupabaseServerClient();

@@ -27,3 +27,22 @@ export function pickAccount(accounts: GoogleAccount[], label?: string | null): G
   }
   return accounts.find((a) => a.label === "default") ?? accounts[0];
 }
+
+// Google kills a refresh token (invalid_grant) when the OAuth app is still in
+// "Testing" mode (after 7 days), when access is revoked, or after long
+// disuse. That used to surface as a silently empty inbox; this lets the UI
+// say "reconnect" instead.
+export function isReconnectError(err: unknown): boolean {
+  const e = err as { message?: string; response?: { data?: { error?: string } } };
+  return e?.response?.data?.error === "invalid_grant" || /invalid_grant/i.test(e?.message ?? "");
+}
+
+export async function checkAccountConnection(acc: GoogleAccount): Promise<"ok" | "reconnect" | "error"> {
+  const { getAuthenticatedClient } = await import("@/lib/google");
+  try {
+    await getAuthenticatedClient(acc.refresh_token).getAccessToken();
+    return "ok";
+  } catch (err) {
+    return isReconnectError(err) ? "reconnect" : "error";
+  }
+}

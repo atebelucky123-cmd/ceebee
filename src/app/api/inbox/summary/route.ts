@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAccounts } from "@/lib/accounts";
 import { listInboxAcrossAccounts, senderName } from "@/lib/inbox";
 import { completeText } from "@/lib/agent";
+import { SUMMARY_MODEL } from "@/lib/settings";
 
 // "CeeBee's summary" at the top of the Inbox: one line of triage over the
 // unread mail ("4 unread. Adeola needs your contract comments today; the
@@ -16,11 +17,19 @@ export async function GET(req: NextRequest) {
   try {
     const all = await getAccounts();
     const accounts = label ? all.filter((a) => a.label === label) : all;
-    const inbox = await listInboxAcrossAccounts(accounts, 10);
+    const { emails: inbox, reconnect } = await listInboxAcrossAccounts(accounts, 10);
     const unread = inbox.filter((e) => e.unread).slice(0, 12);
 
+    if (reconnect.length && inbox.length === 0) {
+      return NextResponse.json({
+        unread: 0,
+        reconnect,
+        summary: `I can't reach your ${reconnect.join(" and ")} Gmail. Google expired the connection, so reconnect on the Accounts page.`,
+        focus: null,
+      });
+    }
     if (unread.length === 0) {
-      return NextResponse.json({ unread: 0, summary: "Inbox zero. Nothing needs you right now.", focus: null });
+      return NextResponse.json({ unread: 0, reconnect, summary: "Inbox zero. Nothing needs you right now.", focus: null });
     }
 
     const key = `${label ?? "all"}|${unread.map((e) => e.id).join(",")}`;
@@ -39,7 +48,7 @@ Newsletters, receipts, notifications and promos can wait.
 Emails:
 ${list}`;
 
-    const raw = await completeText(prompt, 300);
+    const raw = await completeText(prompt, 300, { preferModel: SUMMARY_MODEL });
     let parsed: { summary?: string; focus_id?: string | null; action?: string | null } | null = null;
     if (raw) {
       try {
@@ -52,6 +61,7 @@ ${list}`;
     const focusEmail = unread.find((e) => e.id === parsed?.focus_id) ?? null;
     const body = {
       unread: unread.length,
+      reconnect,
       summary:
         parsed?.summary ||
         `${unread.length} unread. Latest is from ${senderName(unread[0].from)}: "${unread[0].subject}".`,

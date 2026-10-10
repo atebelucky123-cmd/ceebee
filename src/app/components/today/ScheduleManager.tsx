@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import AddEventForm from "../AddEventForm";
 import DatePicker from "../DatePicker";
 import PriorityPill from "./Priority";
-import { BellIcon, VideoIcon } from "../Icons";
+import { BellIcon, ChevronDownIcon, VideoIcon } from "../Icons";
 
 export type ScheduleEvent = {
   id: string;
@@ -61,7 +61,8 @@ export default function ScheduleManager({
   bare?: boolean;
 }) {
   const [selectedDate, setSelectedDate] = useState(todayISO());
-  const [sortBy, setSortBy] = useState<"time" | "priority">("time");
+  const [sortBy, setSortBy] = useState<"time" | "priority" | "custom">("time");
+  const [reorderError, setReorderError] = useState<string | null>(null);
   const [events, setEvents] = useState<ScheduleEvent[]>([]);
   const [calEvents, setCalEvents] = useState<CalEvent[]>([]);
   // Loading = the data on screen is for a different request than the one
@@ -127,6 +128,26 @@ export default function ScheduleManager({
     reload();
   }
 
+  // Custom order: swap with the neighbour, show it immediately, then save.
+  async function move(index: number, delta: -1 | 1) {
+    const target = index + delta;
+    if (target < 0 || target >= events.length) return;
+    const next = [...events];
+    [next[index], next[target]] = [next[target], next[index]];
+    setEvents(next);
+    setReorderError(null);
+    const res = await fetch("/api/schedule/reorder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ date: selectedDate, ids: next.map((e) => e.id) }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setReorderError(data.error ?? "Couldn't save that order.");
+      setLocalKey((k) => k + 1);
+    }
+  }
+
   async function bulkAction(action: "clear" | "unclear") {
     setBulkLoading(true);
     await fetch("/api/schedule/bulk", {
@@ -169,7 +190,7 @@ export default function ScheduleManager({
         )}
         <div className="flex gap-1.5 ml-auto items-center" role="group" aria-label="Sort schedule">
           <span className="text-muted mr-1">Sort</span>
-          {(["time", "priority"] as const).map((opt) => (
+          {(["time", "priority", "custom"] as const).map((opt) => (
             <button
               key={opt}
               onClick={() => setSortBy(opt)}
@@ -183,6 +204,11 @@ export default function ScheduleManager({
           ))}
         </div>
       </div>
+
+      {reorderError && <p className="text-[13px] text-ember">{reorderError}</p>}
+      {sortBy === "custom" && !reorderError && events.length > 1 && (
+        <p className="text-xs text-muted">Use the arrows to set your order. Repeating items keep it on future days.</p>
+      )}
 
       <div className="flex flex-col overflow-y-auto min-h-0 -mx-1 px-1">
         {loading ? (
@@ -213,7 +239,7 @@ export default function ScheduleManager({
                 )}
               </div>
             ))}
-            {events.map((e) => {
+            {events.map((e, index) => {
               const recurring = !!e.recurrence && e.recurrence !== "none";
               return (
                 <div
@@ -240,6 +266,26 @@ export default function ScheduleManager({
                       </span>
                     </label>
                     {e.done ? <span className="text-xs text-muted">Done</span> : <PriorityPill priority={e.priority} />}
+                    {sortBy === "custom" && (
+                      <span className="flex gap-1 shrink-0">
+                        <button
+                          onClick={() => move(index, -1)}
+                          disabled={index === 0}
+                          aria-label={`Move ${e.title} up`}
+                          className="w-8 h-8 rounded-lg border border-line-strong flex items-center justify-center text-soft hover:text-honey disabled:opacity-30"
+                        >
+                          <ChevronDownIcon size={16} className="rotate-180" />
+                        </button>
+                        <button
+                          onClick={() => move(index, 1)}
+                          disabled={index === events.length - 1}
+                          aria-label={`Move ${e.title} down`}
+                          className="w-8 h-8 rounded-lg border border-line-strong flex items-center justify-center text-soft hover:text-honey disabled:opacity-30"
+                        >
+                          <ChevronDownIcon size={16} />
+                        </button>
+                      </span>
+                    )}
                   </div>
                   <div className="flex gap-3 mt-1.5 ml-16 text-xs text-muted items-center flex-wrap">
                     {e.end_time && <span className="font-mono">until {e.end_time.slice(0, 5)}</span>}

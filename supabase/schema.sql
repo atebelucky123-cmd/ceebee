@@ -177,3 +177,7 @@ update app_settings set model = 'openai/gpt-oss-120b'
 -- Track rate-limit hits per provider, since Gemini and Groq have separate,
 -- very different quotas (Gemini free tier is far stricter).
 alter table rate_limit_hits add column if not exists provider text default 'gemini';
+
+-- Custom order for the Schedule ("Custom" sort with up/down arrows). Moving
+-- a repeating item reorders that day and every future day of its series.
+alter table schedule_events add column if not exists sort_order integer;
