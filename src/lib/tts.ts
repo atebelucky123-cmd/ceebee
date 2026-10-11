@@ -62,9 +62,11 @@ export async function synthesizeSpeech(rawText: string, voice: string = DEFAULT_
   const hit = cache.get(key);
   if (hit) return hit;
 
-  // The style line steers delivery; Gemini TTS treats it as direction, not
-  // script (verified by transcribing the output).
-  const prompt = `Speak as CeeBee, a warm, quick-witted personal assistant -- natural and conversational, a little playful, never robotic:\n\n${text}`;
+  // Send ONLY the words to say. A style line ("Speak as CeeBee, warm and
+  // playful...") was tried as direction, but the TTS models sometimes read
+  // it aloud before every message -- and the chosen voice already sounds
+  // natural without it.
+  const prompt = text;
 
   let lastError = "TTS unavailable";
   for (const model of MODELS) {
