@@ -1079,7 +1079,7 @@ async function callGemini(
 // --- Groq requests with rate-limit handling --------------------------------
 // Groq's free tier caps gpt-oss-120b at 8,000 tokens per minute, and one
 // CeeBee turn is ~3-4k tokens, so two quick messages can hit it. Short waits
-// ("try again in 2.4s") are waited out once; otherwise the request moves to
+// (up to ~15s, e.g. "try again in 2.4s") are waited out once; otherwise the request moves to
 // gpt-oss-20b, which has its own separate limits. Only if both are busy does
 // the caller get a GroqBusyError (shown to Shina in plain words).
 
@@ -1107,8 +1107,9 @@ async function groqRequest(body: Record<string, unknown>, apiKey: string): Promi
 
       const errText = await res.text();
       if (res.status === 429 || res.status === 503) {
-        const wait = Number(/try again in ([d.]+)s/i.exec(errText)?.[1]);
-        if (attempt === 0 && wait > 0 && wait <= 6) {
+        const wait =
+          Number(/try again in ([\d.]+)s/i.exec(errText)?.[1]) || Number(res.headers.get("retry-after"));
+        if (attempt === 0 && wait > 0 && wait <= 15) {
           await new Promise((r) => setTimeout(r, wait * 1000 + 250));
           continue;
         }
