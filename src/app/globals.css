@@ -93,3 +93,14 @@ input[type="checkbox"] {
 }
 .ceebee-typing span:nth-child(2) { animation-delay: 0.15s; }
 .ceebee-typing span:nth-child(3) { animation-delay: 0.3s; }
+
+/* Wrong PIN on the lock screen. */
+@keyframes ceebee-shake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-8px); }
+  40%, 80% { transform: translateX(8px); }
+}
+.ceebee-shake { animation: ceebee-shake 0.35s ease-in-out; }
+@media (prefers-reduced-motion: reduce) {
+  .ceebee-shake { animation: none; }
+}

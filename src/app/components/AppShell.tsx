@@ -29,9 +29,10 @@ const SECONDARY = [
 // Everything else is a single readable column, centred.
 const FULL_BLEED = ["/dashboard", "/chat"];
 
-function useUnreadCount() {
+function useUnreadCount(enabled: boolean) {
   const [unread, setUnread] = useState(0);
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     const load = () =>
       fetch("/api/emails/unread-count")
@@ -44,13 +45,16 @@ function useUnreadCount() {
       cancelled = true;
       clearInterval(id);
     };
-  }, []);
+  }, [enabled]);
   return unread;
 }
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "";
-  const unread = useUnreadCount();
+  // The lock screen stands alone: no nav, and no API calls that would 401.
+  const locked = pathname === "/unlock";
+  const unread = useUnreadCount(!locked);
+  if (locked) return <div className="flex h-full min-h-0 flex-col">{children}</div>;
   const onChat = pathname.startsWith("/chat");
   const fullBleed = FULL_BLEED.some((p) => pathname.startsWith(p));
 

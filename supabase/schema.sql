@@ -181,3 +181,24 @@ alter table rate_limit_hits add column if not exists provider text default 'gemi
 -- Custom order for the Schedule ("Custom" sort with up/down arrows). Moving
 -- a repeating item reorders that day and every future day of its series.
 alter table schedule_events add column if not exists sort_order integer;
+
+-- Trusted-device lock: devices that unlocked CeeBee with the PIN. Only the
+-- SHA-256 of each device's cookie token is stored; deleting a row revokes it.
+create table if not exists trusted_devices (
+  id uuid primary key default gen_random_uuid(),
+  token_hash text not null unique,
+  label text not null,
+  user_agent text,
+  created_at timestamptz not null default now(),
+  last_used_at timestamptz not null default now()
+);
+alter table trusted_devices enable row level security;
+
+-- Wrong PIN attempts, for rate limiting the lock screen (kept for a day).
+create table if not exists unlock_attempts (
+  id uuid primary key default gen_random_uuid(),
+  ip text not null,
+  created_at timestamptz not null default now()
+);
+alter table unlock_attempts enable row level security;
+create index if not exists unlock_attempts_created_idx on unlock_attempts (created_at);

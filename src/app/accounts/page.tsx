@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import VoicePicker from "../components/VoicePicker";
+import TrustedDevices from "../components/TrustedDevices";
 
 type Account = { email: string; label: string; status?: "ok" | "reconnect" | "upgrade" | "error" };
 
@@ -131,6 +132,8 @@ export default function AccountsPage() {
           Connect the account, then tap Rename to give it a nickname like
           Personal, Business, or CBM.
         </p>
+
+        <TrustedDevices />
       </main>
     </div>
   );
