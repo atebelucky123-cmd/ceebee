@@ -3,9 +3,17 @@ import { getSupabaseServerClient } from "@/lib/supabase";
 // Llama 3.1 8B and Gemini 2.5 Flash both turned out to be unavailable on
 // Shina's free-tier accounts (confirmed via live "model_not_found"/404
 // errors) -- trimmed down to the two models that actually work.
+// `label` is the real name (Developer tools); `nickname` + `hint` are what the
+// chat box's quick picker shows.
 export const AVAILABLE_MODELS = [
-  { id: "openai/gpt-oss-120b", label: "GPT-OSS 120B (Groq)", provider: "groq" as const },
-  { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash", provider: "gemini" as const },
+  {
+    id: "openai/gpt-oss-120b", label: "GPT-OSS 120B (Groq)", provider: "groq" as const,
+    nickname: "Flash", hint: "Quick replies, all day",
+  },
+  {
+    id: "gemini-3.6-flash", label: "Gemini 3.6 Flash", provider: "gemini" as const,
+    nickname: "Smart", hint: "Thinks deeper · ~20 a day",
+  },
 ];
 
 const DEFAULT_MODEL = "openai/gpt-oss-120b";

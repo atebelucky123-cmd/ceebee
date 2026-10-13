@@ -1,7 +1,9 @@
-// Open-Meteo is free and requires no API key. Defaults to Lagos if no
-// coordinates are passed (e.g. browser geolocation was denied).
-export const DEFAULT_LAT = 6.5244;
-export const DEFAULT_LON = 3.3792;
+// Open-Meteo is free and requires no API key. Without device coordinates
+// (location denied or slow -- common in the iPhone Home Screen app) it uses
+// Shina's LGA, Ifako-Ijaiye, not central Lagos: ~14 km apart, and the
+// forecasts differ by a degree or two.
+export const DEFAULT_LAT = 6.6442;
+export const DEFAULT_LON = 3.3249;
 
 // Full WMO weather interpretation codes, as used by Open-Meteo.
 // https://open-meteo.com/en/docs -- "WMO Weather interpretation codes"
